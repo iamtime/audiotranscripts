@@ -24,6 +24,7 @@ const st = {
   claude: true,
   unreadChat: false,
   notes: { text: '', dirty: false, path: '' },
+  external: { files: [], speakers: [] },
   frames: { scenes: [], selection: null, stats: null, busy: false },
   vis: { lines: new Set(), shots: new Set(), frames: new Set() },   // hidden items (left out of Beautify)
   starting: false,
@@ -188,6 +189,7 @@ async function selectProject(name, { keepSession = false } = {}) {
   $('#projectName').textContent = name || '—';
   if (!keepSession) { st.sid = null; st.session = null; resetFrames(); applyVis(null); }
   loadNotes();
+  loadExternal();
   await loadSessions();
   if (!keepSession) {
     const liveSid = recActive() && st.recorder.project === name && st.recorder.sid;
@@ -204,6 +206,7 @@ async function loadSessions() {
 
 async function selectSession(sid, { quiet = false } = {}) {
   st.sid = sid;
+  renderExternal();
   st.docVersion = null;
   try {
     st.session = await api('GET', sessUrl());
@@ -1662,6 +1665,9 @@ async function handle(m) {
     case 'notes':
       if (m.project === st.project && m.client !== CLIENT_ID) applyNotes(m.text, true);
       break;
+    case 'external':
+      if (m.project === st.project) { st.external = { files: m.files, speakers: m.speakers }; renderExternal(); }
+      break;
     case 'toast': toast(m.text, m.level || 'info'); break;
   }
 }
@@ -1670,7 +1676,7 @@ async function handle(m) {
 const notesUrl = () => `/api/projects/${encodeURIComponent(st.project)}/notes`;
 let notesTimer = null;
 
-function countCorrections(text) { return (text.match(/^\s*[-*]\s*".+?"\s*(→|->)\s*".+?"/gm) || []).length; }
+function countCorrections(text) { return (text.match(/^\s*[-*]?\s*".+?"\s*(→|->|<--)\s*\S/gm) || []).length; }
 function setNotesState(t, dirty) { const el = $('#notesState'); el.textContent = t; el.classList.toggle('dirty', !!dirty); }
 
 function applyNotes(text, external) {
@@ -1721,6 +1727,85 @@ window.addEventListener('beforeunload', () => {
   if (st.notes.dirty && st.project) navigator.sendBeacon && fetch(notesUrl(), { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: $('#notesArea').value, client: CLIENT_ID }) });
 });
 
+// ── External transcripts (projects/<p>/external/ — e.g. Teams, for speaker names) ─
+const extUrl = () => `/api/projects/${encodeURIComponent(st.project)}/external`;
+
+async function loadExternal() {
+  st.external = { files: [], speakers: [] };
+  renderExternal();
+  if (!st.project) return;
+  try { st.external = await api('GET', extUrl()); } catch (_) { /* keep empty */ }
+  renderExternal();
+}
+
+function renderExternal() {
+  const list = $('#extList');
+  $('#extBox').classList.toggle('hidden', !st.project);
+  const files = st.external.files || [];
+  if (!files.length) {
+    list.innerHTML = `<div class="ext-empty">Drop the Teams transcript of this meeting here (.vtt or .docx). Beautify takes speaker names from it and keeps our spelling of brands and terms.</div>`;
+    return;
+  }
+  list.innerHTML = files.map(f => {
+    const on = f.sid == null || f.sid === st.sid;
+    const bind = f.sid == null ? 'All sessions' : f.sid === st.sid ? 'This session' : sidLabel(f.sid);
+    const tip = f.sid == null ? 'Used for every session in this project. Click to use it for this session only.'
+      : f.sid === st.sid ? 'Used when beautifying this session. Click to use it for every session.'
+      : 'Belongs to another session. Click to use it for this session.';
+    const spk = (f.speakers || []).length;
+    return `<div class="ext-item${on ? '' : ' off'}" data-name="${esc(f.name)}">
+      <div class="ext-main"><div class="ext-name" title="${esc(f.path)}">${esc(f.original)}</div>
+      <div class="ext-meta">${f.lines} lines${spk ? ` · ${spk} speaker${spk > 1 ? 's' : ''}: ${esc(f.speakers.slice(0, 4).join(', '))}${spk > 4 ? '…' : ''}` : ''}</div></div>
+      <button class="ext-bind" data-act="bind" title="${esc(tip)}">${esc(bind)}</button>
+      <button class="ext-del" data-act="del" title="Remove">×</button></div>`;
+  }).join('');
+}
+
+async function uploadExternal(fileList) {
+  if (!st.project) return;
+  for (const file of fileList) {
+    try {
+      const q = new URLSearchParams({ name: file.name, ...(st.sid ? { sid: st.sid } : {}) });
+      const res = await fetch(`${extUrl()}?${q}`, { method: 'PUT', body: file });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((d && d.detail) || `${res.status} ${res.statusText}`);
+      st.external = d;
+      renderExternal();
+      const rec = d.files[d.files.length - 1];
+      toast(`Added ${file.name}${rec && rec.speakers.length ? ` · ${rec.speakers.length} speakers` : ''}. Beautify will use it.`, 'ok');
+    } catch (e) { fail(e); }
+  }
+}
+
+$('#extUploadBtn').addEventListener('click', () => $('#extFile').click());
+$('#extFile').addEventListener('change', e => { uploadExternal([...e.target.files]); e.target.value = ''; });
+$('#extList').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const item = btn.closest('.ext-item'), name = item.dataset.name;
+  const f = st.external.files.find(x => x.name === name);
+  try {
+    if (btn.dataset.act === 'del') {
+      st.external = await api('DELETE', `${extUrl()}/${encodeURIComponent(name)}`);
+      toast(`Removed ${f ? f.original : name}`);
+    } else {
+      const sid = f && f.sid === st.sid ? null : st.sid;
+      st.external = await api('PATCH', `${extUrl()}/${encodeURIComponent(name)}`, { sid });
+    }
+    renderExternal();
+  } catch (err) { fail(err); }
+});
+{
+  const zone = $('#side-notes'), box = $('#extBox');
+  zone.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); box.classList.add('drag'); } });
+  zone.addEventListener('dragleave', e => { if (!zone.contains(e.relatedTarget)) box.classList.remove('drag'); });
+  zone.addEventListener('drop', e => {
+    if (!e.dataTransfer.files.length) return;
+    e.preventDefault(); box.classList.remove('drag');
+    uploadExternal([...e.dataTransfer.files]);
+  });
+}
+
 // ── Correction popover: select transcript text → fix it → goes to Notes ───
 function selectionInfo(win, root) {
   const sel = win.getSelection();
@@ -1729,20 +1814,45 @@ function selectionInfo(win, root) {
   if (!text || text.length > 400) return null;
   const range = sel.getRangeAt(0);
   if (root && !root.contains(range.commonAncestorContainer)) return null;
-  return { text, rect: range.getBoundingClientRect() };
+  return { text, rect: range.getBoundingClientRect(), time: selectionTime(range) };
 }
 
+// Time of the selected line: the transcript row, or the nearest time stamp in a Beautified document.
+function selectionTime(range) {
+  let n = range.startContainer;
+  if (n.nodeType !== 1) n = n.parentElement;
+  const row = n && n.closest('[data-time]');
+  if (row) return row.dataset.time;
+  for (let el = n; el && el.tagName !== 'BODY'; el = el.parentElement) {
+    const t = el.querySelector && el.querySelector('.time');
+    const m = t && /\d{2}:\d{2}:\d{2}/.exec(t.textContent);
+    if (m) return m[0];
+  }
+  return '';
+}
+
+let fixMode = 'fix';
 function openFixPop(info, offset = { x: 0, y: 0 }) {
   if (!st.project) return;
   const pop = $('#fixPop');
+  const who = fixMode === 'who';
+  const names = st.external.speakers || [];
   pop.innerHTML = `
-    <div class="pop-title">Correct the transcript</div>
-    <div class="pop-sub" style="margin-bottom:4px">Saved to Notes as a rule, so Beautify and Ask apply it everywhere, and live recognition uses it as a hint.</div>
+    <div class="pop-title">${who ? 'Who said it' : 'Correct the transcript'}</div>
+    <div class="seg" id="fixMode"><button data-m="fix" class="${who ? '' : 'on'}">Fix text</button><button data-m="who" class="${who ? 'on' : ''}">Who said it</button></div>
+    <div class="pop-sub" style="margin-bottom:4px">${who
+      ? 'Saved to Notes as <code>"quote" &lt;-- Name</code>, so Beautify attributes this line (and that voice) to the person.'
+      : 'Saved to Notes as a rule, so Beautify and Ask apply it everywhere, and live recognition uses it as a hint.'}</div>
+    ${who ? `
+    <label>Quote${info.time ? ` · ${esc(info.time)}` : ''}</label><div class="orig quote">${esc(info.text)}</div>
+    <label for="fixWho">Said by</label><input class="field" id="fixWho" list="fixWhoList" placeholder="e.g. Jane Doe" autocomplete="off">
+    <datalist id="fixWhoList">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="row-btns"><span class="kb"><kbd>↵</kbd> save · <kbd>esc</kbd> close</span><button class="ghost-btn small" id="fixCancel">Cancel</button><button class="primary-btn" id="fixSave" style="height:28px;font-size:12.5px">Add to notes</button></div>` : `
     <label>Heard</label><div class="orig">${esc(info.text)}</div>
     <label for="fixTo">Should be</label><textarea class="field" id="fixTo" rows="2">${esc(info.text)}</textarea>
     <label for="fixWhy">Comment <span style="text-transform:none;letter-spacing:0;font-weight:500">(optional)</span></label>
     <input class="field" id="fixWhy" placeholder="e.g. product name, person's name">
-    <div class="row-btns"><span class="kb"><kbd>↵</kbd> save · <kbd>esc</kbd> close</span><button class="ghost-btn small" id="fixCancel">Cancel</button><button class="primary-btn" id="fixSave" style="height:28px;font-size:12.5px">Add to notes</button></div>`;
+    <div class="row-btns"><span class="kb"><kbd>↵</kbd> save · <kbd>esc</kbd> close</span><button class="ghost-btn small" id="fixCancel">Cancel</button><button class="primary-btn" id="fixSave" style="height:28px;font-size:12.5px">Add to notes</button></div>`}`;
   pop.classList.remove('hidden');
   const r = info.rect, w = pop.offsetWidth, h = pop.offsetHeight;
   let left = r.left + offset.x + r.width / 2 - w / 2;
@@ -1750,12 +1860,27 @@ function openFixPop(info, offset = { x: 0, y: 0 }) {
   if (top + h > window.innerHeight - 10) top = Math.max(10, r.top + offset.y - h - 10);
   pop.style.left = `${Math.max(10, Math.min(left, window.innerWidth - w - 10))}px`;
   pop.style.top = `${top}px`;
-  const to = $('#fixTo');
-  to.focus(); to.select();
+  $('#fixMode').onclick = e => {
+    const b = e.target.closest('[data-m]');
+    if (b && b.dataset.m !== fixMode) { fixMode = b.dataset.m; openFixPop(info, offset); }
+  };
+  const field = who ? $('#fixWho') : $('#fixTo');
+  field.focus(); field.select();
   const save = async () => {
-    const fixed = to.value.replace(/\s+/g, ' ').trim();
-    if (!fixed || fixed === info.text) { closeFixPop(); return; }
     try {
+      if (who) {
+        const speaker = field.value.replace(/\s+/g, ' ').trim();
+        if (!speaker) { field.focus(); return; }
+        await saveNotesNow();
+        const d = await api('POST', notesUrl() + '/speaker', { quote: info.text, speaker, time: info.time || '' });
+        applyNotes(d.text, true);
+        if (!st.external.speakers.includes(speaker)) st.external.speakers.push(speaker);
+        closeFixPop();
+        toast(`Added to Notes: “${info.text}” ← ${speaker}`, 'ok');
+        return;
+      }
+      const fixed = field.value.replace(/\s+/g, ' ').trim();
+      if (!fixed || fixed === info.text) { closeFixPop(); return; }
       await saveNotesNow();
       const d = await api('POST', notesUrl() + '/correction', { original: info.text, fixed, comment: $('#fixWhy').value });
       applyNotes(d.text, true);

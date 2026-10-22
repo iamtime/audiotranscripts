@@ -480,6 +480,24 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .save-state { font-size: 11.5px; color: var(--faint); padding-bottom: 8px; white-space: nowrap; }
 .save-state.dirty { color: var(--warn); }
 
+.ext-box { margin: 0 12px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); transition: border-color .15s, background .15s; }
+.ext-box.drag { border-color: var(--accent); background: var(--accent-soft); }
+.ext-head { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; }
+.ext-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 650; margin-right: auto; }
+.ext-list:empty { display: none; }
+.ext-empty { font-size: 12px; color: var(--muted); padding: 0 12px 10px; line-height: 1.45; }
+.ext-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-top: 1px solid var(--line); min-width: 0; }
+.ext-item .ext-main { flex: 1; min-width: 0; }
+.ext-item .ext-name { font-size: 13px; font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-item .ext-meta { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-item.off .ext-name { color: var(--muted); }
+.ext-bind { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.ext-item.off .ext-bind { background: var(--panel); color: var(--faint); border: 1px solid var(--line); }
+.ext-del { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 7px; color: var(--faint); font-size: 15px; }
+.ext-del:hover { background: var(--panel); color: var(--rec); }
+.fix-pop .seg { margin: 8px 0 10px; }
+.fix-pop .orig.quote { text-decoration: none; font-style: italic; color: var(--ink-2); }
+
 /* ── Correction popover ───────────────────────────────────────────────────── */
 .fix-pop { width: 380px; padding: 14px; }
 .fix-pop .orig { font-size: 13px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin: 6px 0 10px; max-height: 90px; overflow-y: auto; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--rec) 60%, transparent); }

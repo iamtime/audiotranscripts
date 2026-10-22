@@ -47,6 +47,8 @@ DEFAULT_PROJECT_SETTINGS = {
 
 CORRECTION_RE = re.compile(r'^\s*[-*]\s*"(.+?)"\s*(?:→|->)\s*"(.+?)"')
 CORRECTIONS_HEADING = "## Corrections"
+SPEAKERS_HEADING = "## Who said it"
+SPEAKER_NOTE_RE = re.compile(r'^\s*(?:[-*]\s*)?".+?"\s*<--\s*(.+?)(?:\s{2,}\(at [\d:]+\))?\s*$')
 
 
 def _read_json(path: Path, default):
@@ -123,14 +125,16 @@ def save_notes(project: str, text: str):
     tmp.replace(path)
 
 
-def add_correction(project: str, original: str, fixed: str, comment: str = "") -> str:
-    """Append '- "original" → "fixed"' under the Corrections heading."""
-    clean = lambda t: " ".join(t.split()).replace('"', "'")
-    line = f'- "{clean(original)}" → "{clean(fixed)}"' + (f"  ({clean(comment)})" if comment.strip() else "")
+def _clean(t: str) -> str:
+    return " ".join(t.split()).replace('"', "'")
+
+
+def _append_under(project: str, heading: str, heading_line: str, line: str) -> str:
+    """Append a line at the end of the '## heading' section of the notes (creating the section)."""
     text = load_notes(project).rstrip("\n")
     lines = text.split("\n") if text else []
     try:
-        start = next(i for i, l in enumerate(lines) if l.strip().lower().startswith(CORRECTIONS_HEADING.lower()))
+        start = next(i for i, l in enumerate(lines) if l.strip().lower().startswith(heading.lower()))
         end = start + 1
         while end < len(lines) and not lines[end].startswith("#"):
             end += 1
@@ -140,10 +144,26 @@ def add_correction(project: str, original: str, fixed: str, comment: str = "") -
     except StopIteration:
         if lines:
             lines.append("")
-        lines += [CORRECTIONS_HEADING + " (speech-to-text: heard → meant)", line]
+        lines += [heading_line, line]
     text = "\n".join(lines) + "\n"
     save_notes(project, text)
     return text
+
+
+def add_correction(project: str, original: str, fixed: str, comment: str = "") -> str:
+    """Append '- "original" → "fixed"' under the Corrections heading."""
+    line = f'- "{_clean(original)}" → "{_clean(fixed)}"' + (f"  ({_clean(comment)})" if comment.strip() else "")
+    return _append_under(project, CORRECTIONS_HEADING, CORRECTIONS_HEADING + " (speech-to-text: heard → meant)", line)
+
+
+def add_speaker(project: str, quote: str, speaker: str, time: str = "") -> str:
+    """Append '- "quote" <-- Speaker' under the Speakers heading."""
+    line = f'- "{_clean(quote)}" <-- {_clean(speaker)}' + (f"  (at {time})" if time else "")
+    return _append_under(project, SPEAKERS_HEADING, SPEAKERS_HEADING + " (quote <-- who said it)", line)
+
+
+def known_speakers(text: str) -> list[str]:
+    return list(dict.fromkeys(m.group(1).strip() for m in (SPEAKER_NOTE_RE.match(l) for l in text.splitlines()) if m))
 
 
 def parse_corrections(text: str) -> list[tuple[str, str]]:

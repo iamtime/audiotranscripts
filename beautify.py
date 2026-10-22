@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 import claude_cli
+import external
 from sessions import (
     ROOT, beautify_text, latest_version, load_manifest, load_notes, load_project_settings, load_settings, notes_path,
     parse_transcript, project_dir, save_manifest, session_dir, shot_time,
@@ -45,7 +46,7 @@ Create the {mode_title} of a FULL annotated transcript of a recorded session, as
 {shots}
 - Style reference: {style}
   Copy ONLY its visual style and structure (CSS incl. dark mode, header, "Who's speaking" chips, callout legend, numbered section dividers, speaker turns, callouts, screenshot figures, footer). Never copy its content.
-{prev_block}{context_block}{notes_block}{docs_block}
+{prev_block}{context_block}{notes_block}{ext_block}{docs_block}
 ## Requirements
 1. Keep EVERY utterance. Do not summarize, shorten, condense or skip anything, including small talk. Merge fragments into clean speaker turns, fix obvious speech-to-text garbles, and keep each speaker's own wording. Keep the original language of the speech (do not translate).
 2. Work out the real speakers from content, self-introductions, how people address each other, and the screenshots. Use one consistent name per person. If a voice can't be identified, give it a descriptive label like "Client (ops)". Give each turn the time of its first line.
@@ -160,8 +161,26 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
     notes_block = (
         f"- The user's notes for this project ({notes_path(project)}). They are AUTHORITATIVE: they cover who we are, "
         "the client, participants and terms. Apply every correction (heard → meant) everywhere in the transcript, "
-        "including other spellings and mishearings of the same words:\n"
+        "including other spellings and mishearings of the same words. A line '\"quote\" <-- Name' means Name said "
+        "that quote: attribute that turn to Name, and use it to recognise Name's voice elsewhere:\n"
         + "".join(f"    {l}\n" for l in notes.splitlines()) if notes else "")
+
+    ext_files = external.for_session(project, sid)
+    ext_block = (
+        "- External transcript(s) of the SAME meeting from another tool (e.g. Microsoft Teams):\n"
+        + "".join(f"    {p}\n" for p in ext_files)
+        + "  Read them in full and merge them with ours into one better document:\n"
+        "  - Speaker names there are reliable (they come from meeting accounts): use them to attribute turns.\n"
+        "  - Brand names, product names and technical terms there are often misrecognized; ours (plus the notes "
+        "and screenshots) usually has them right, so prefer our wording for those.\n"
+        "  - Its timestamps may be relative to the start of that recording; align the two by content, but keep "
+        "OUR times in the document.\n"
+        "  - Where ours is garbled or missed something that the external one has, recover it from there.\n"
+        "  - Say in the footer that an external transcript was used for speaker attribution.\n") if ext_files else ""
+
+    if mode == "update" and (ext_files or "<--" in notes):
+        write_rule += ("\n   - Re-check speaker attribution in the EXISTING part too, against the external transcript and the "
+                       "'quote <-- Name' notes, and fix wrong or generic speaker labels (header chips included).")
 
     docs_dir = project_dir(project) / "docs"
     docs = sorted(p.name for p in docs_dir.glob("*") if p.suffix in (".html", ".txt", ".md")) if docs_dir.exists() else []
@@ -177,7 +196,7 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
     prompt = PROMPT.format(
         mode_title=mode_title, input=snapshot, n_lines=len(timed), t_first=t_first, t_last=t_last,
         live_note=live_note, shots=_fmt_shots(shots, sdir), style=style, prev_block=prev_block,
-        context_block=context_block, notes_block=notes_block, docs_block=docs_block,
+        context_block=context_block, notes_block=notes_block, ext_block=ext_block, docs_block=docs_block,
         callout_source=callout_source, v=v, now=datetime.now().strftime("%Y-%m-%d %H:%M"),
         out=out, write_rule=write_rule,
     )
@@ -198,8 +217,9 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
         "add_dirs": sorted({str(project_dir(project).resolve()), str(ROOT)}),
         "labels": {str(snapshot): "Reading the transcript", snapshot.name: "Reading the transcript",
                    str(style): "Studying the style reference", style.name: "Studying the style reference",
-                   **({str(sdir / prev["html"]): f"Reading previous version v{prev['v']}"} if prev else {})},
-        "shot_count": len(shots), "lines": len(timed), "t_last": t_last,
+                   **({str(sdir / prev["html"]): f"Reading previous version v{prev['v']}"} if prev else {}),
+                   **{str(p): "Reading the external transcript" for p in ext_files}},
+        "ext_files": ext_files, "shot_count": len(shots), "lines": len(timed), "t_last": t_last,
     }
 
 
@@ -279,6 +299,8 @@ def run_api(spec: dict) -> None:
         txt = project_dir(spec["project"]) / "screenshots" / Path(name).with_suffix(".txt")
         if txt.exists():
             ocr_parts.append(f"--- {name} ---\n{txt.read_text(encoding='utf-8', errors='replace')}")
+    ext = "".join(f"--- {p.name} ---\n{p.read_text(encoding='utf-8', errors='replace')}\n"
+                  for p in spec.get("ext_files", []))
     prompt = (spec["prompt"].split("## Requirements")[1]
               .replace("Use the exact relative src listed for each screenshot above.",
                        "Use src=\"../../screenshots/<file name>\".")
@@ -286,7 +308,9 @@ def run_api(spec: dict) -> None:
     prompt = ("Create a FULL annotated transcript as one self-contained HTML document.\n\n## Requirements"
               + prompt + "\nReply with the HTML document only, with no markdown fences.\n\n"
               f"## STYLE REFERENCE (structure/CSS only)\n{spec['style'].read_text(encoding='utf-8')}\n\n"
-              f"## SCREENSHOT OCR\n" + ("\n\n".join(ocr_parts) or "(none)") + f"\n\n## RAW TRANSCRIPT\n{text}\n")
+              f"## SCREENSHOT OCR\n" + ("\n\n".join(ocr_parts) or "(none)") + f"\n\n## RAW TRANSCRIPT\n{text}\n"
+              + (f"\n## EXTERNAL TRANSCRIPT OF THE SAME MEETING (reliable speaker names, often wrong terms; "
+                 f"use it to attribute speakers, keep our terms and times)\n{ext}" if ext else ""))
     model = settings.get("api_model") or None
     provider = pt.detect_provider(model)
     try:

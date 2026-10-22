@@ -145,11 +145,18 @@ VOICE_REC_PYTHON=/path/to/python ./webui.sh --port 9000 --no-browser
   - *Full rebuild* regenerates the whole document.
   - *Final* runs automatically when recording stops. It uses the diarized transcript and is also copied to `docs/`.
 - **Ask**: chat about the transcript (live or saved) while recording keeps running. It follows up with only the new lines.
+- **Notes**: one file per project, `projects/<name>/notes.md`, sent with every Beautify and Ask request as authoritative context: who's who, the client, terms that are often misheard. Edits are saved as you type.
 
 Per-project settings (gear icon) live in `projects/<name>/project.json`:
 - **Knowledge folder**: Claude Code runs there, so its MCP servers (e.g. `claude-context`) are available for callouts.
 - **Style reference**: the HTML whose look to copy. Defaults to `templates/annotated_transcript_style.html`.
-- **Context notes**: who's who, client name, terms that are often misheard.
+
+**Corrections and speakers from a selection.** Select text in the transcript or in a Beautified version and a popover offers two modes:
+
+- *Fix text*: adds `- "heard" → "meant"` under `## Corrections` in the notes. Beautify and Ask apply it everywhere (other spellings too), and the recorder uses it as a vocabulary hint (`--vocab-file`).
+- *Who said it*: adds `- "quote" <-- Name  (at HH:MM:SS)` under `## Who said it`. Beautify attributes that turn to the person and uses it to recognise the same voice elsewhere; an *Update* run re-checks speakers in the existing part as well. Names already known (from these lines or an external transcript) are suggested.
+
+**External transcript.** Another tool's transcript of the same meeting (e.g. Microsoft Teams: `.vtt`, `.docx`, `.txt`, `.srt`) can be uploaded or dropped in the Notes tab. It usually has reliable speaker names but garbled brands and terms, while ours is the other way round, so Beautify merges the two: speakers from the external one, terms and times from ours, and anything ours missed recovered from it. Files go to `projects/<name>/external/` (the original, a normalized `<name>.transcript.txt` with merged `[HH:MM:SS] Speaker: text` turns, and `index.json`). Each file belongs to the session that was open when it was uploaded; click its label to use it for all sessions of the project instead. Ask is told about it too.
 
 Beautify also works from the console:
 
@@ -157,7 +164,7 @@ Beautify also works from the console:
 python beautify.py myproject 20260928_110051 --mode full     # or: latest, --mode final
 ```
 
-Files: versions in `projects/<p>/sessions/<sid>/vN.html` (+ `manifest.json`, transcript snapshots, `chat.json`, `events.jsonl`); UI state in `.webui/`.
+Files: versions in `projects/<p>/sessions/<sid>/vN.html` (+ `manifest.json`, transcript snapshots, `chat.json`, `events.jsonl`); notes in `projects/<p>/notes.md`; external transcripts in `projects/<p>/external/`; UI state in `.webui/`.
 
 ### Re-diarization
 
@@ -316,7 +323,8 @@ Key constants in `main.py`:
 | `web/` | Web UI front end (static HTML/CSS/JS, no build step, Electron-ready) |
 | `beautify.py` | Full annotated transcript via Claude Code (also a console tool) |
 | `claude_cli.py` | Helpers for headless `claude -p` (stream-json parsing, progress labels) |
-| `sessions.py` | Transcript parsing, session listing, settings, beautify manifests |
+| `sessions.py` | Transcript parsing, session listing, settings, notes (corrections, speakers), beautify manifests |
+| `external.py` | External transcripts (Teams etc.): parsing, storage, binding to sessions |
 | `events.py` | Optional JSON-lines event stream from `main.py --events` |
 | `templates/annotated_transcript_style.html` | Default style reference for Beautify |
 | `requirements.txt` | Python dependencies |

@@ -20,18 +20,20 @@ import signal
 import sys
 import time
 import uuid
+import zipfile
 import webbrowser
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import beautify
 import claude_cli
+import external
 import select_frames as SF
 import sessions as S
 
@@ -633,6 +635,13 @@ class ChatManager:
             notes_note = ("The user's notes and corrections for this project (authoritative; apply corrections "
                           f"to the transcript when answering):\n<notes>\n{notes}\n</notes>\n\n")
         data["notes_hash"] = notes_hash
+        ext_files = [str(p) for p in external.for_session(project, sid)]
+        ext_hash = hashlib.md5("\n".join(ext_files).encode()).hexdigest()
+        if ext_files and data.get("ext_hash") != ext_hash:
+            notes_note += ("External transcript(s) of the same meeting (e.g. Teams; reliable speaker names, often "
+                           "misrecognized terms). Read them when a question is about who said what:\n"
+                           + "".join(f"- {p}\n" for p in ext_files) + "\n")
+        data["ext_hash"] = ext_hash
         if prefix_ok:
             delta = transcript[data["sent_len"]:]
             body = (f"New transcript lines since my last message ({status}):\n<transcript_update>\n{delta}"
@@ -890,6 +899,62 @@ async def notes_correction(project: str, data: dict = Body(...)):
     text = S.add_correction(project, original, fixed, data.get("comment") or "")
     hub.emit({"type": "notes", "project": project, "text": text})
     return {"text": text}
+
+
+@app.post("/api/projects/{project}/notes/speaker")
+async def notes_speaker(project: str, data: dict = Body(...)):
+    quote, speaker = (data.get("quote") or "").strip(), (data.get("speaker") or "").strip()
+    if not quote or not speaker:
+        _err(ValueError("Both the quote and the speaker are needed"))
+    text = S.add_speaker(project, quote, speaker, (data.get("time") or "").strip())
+    hub.emit({"type": "notes", "project": project, "text": text})
+    return {"text": text}
+
+
+# ── External transcripts (e.g. Teams) of the same meeting ───────────────────
+
+def _external_state(project: str) -> dict:
+    files = external.public(project)
+    names = S.known_speakers(S.load_notes(project)) + [n for f in files for n in f.get("speakers", [])]
+    return {"files": files, "speakers": list(dict.fromkeys(names))}
+
+
+@app.get("/api/projects/{project}/external")
+async def external_list(project: str):
+    return _external_state(project)
+
+
+@app.put("/api/projects/{project}/external")
+async def external_upload(project: str, request: Request, name: str, sid: str | None = None):
+    try:
+        await asyncio.to_thread(external.add, project, name, await request.body(), sid or None)
+    except (ValueError, KeyError, zipfile.BadZipFile) as e:
+        _err(ValueError(f"Can't read {name}: {e}"))
+    state = _external_state(project)
+    hub.emit({"type": "external", "project": project, **state})
+    return state
+
+
+@app.patch("/api/projects/{project}/external/{name}")
+async def external_bind(project: str, name: str, data: dict = Body(...)):
+    try:
+        external.set_session(project, name, data.get("sid") or None)
+    except ValueError as e:
+        _err(e)
+    state = _external_state(project)
+    hub.emit({"type": "external", "project": project, **state})
+    return state
+
+
+@app.delete("/api/projects/{project}/external/{name}")
+async def external_delete(project: str, name: str):
+    try:
+        external.remove(project, name)
+    except ValueError as e:
+        _err(e)
+    state = _external_state(project)
+    hub.emit({"type": "external", "project": project, **state})
+    return state
 
 
 @app.delete("/api/projects/{project}/sessions/{sid}/screenshots/{name}")

@@ -97,8 +97,12 @@
       </div>
 
       <div class="side-body hidden" id="side-notes">
-        <div class="notes-help">Sent with every <b>Beautify</b> and <b>Ask</b> request in this project: who's who, the client, what was wrong last time. <b>Select text in the transcript</b> to add a correction here. Corrections also guide live recognition.</div>
-        <textarea class="notes-area" id="notesArea" spellcheck="true" placeholder="e.g.&#10;We are the ... team. Client: ... &#10;Speaker at 11:06 is .....&#10;Don't call the system “XXXXX” — it's XXXXXY.&#10;&#10;## Corrections (speech-to-text: heard → meant)&#10;- &quot;hybrids&quot; → &quot;Hybris&quot;"></textarea>
+        <div class="notes-help">Sent with every <b>Beautify</b> and <b>Ask</b> request in this project: who's who, the client, what was wrong last time. <b>Select text in the transcript</b> to add a correction or say who said it. Corrections also guide live recognition.</div>
+        <div class="ext-box" id="extBox">
+          <div class="ext-head"><span class="ext-title">External transcript</span><button class="ghost-btn small" id="extUploadBtn" title="Teams transcript of the same meeting (.vtt, .docx, .txt)">Upload…</button><input type="file" id="extFile" accept=".vtt,.docx,.txt,.srt,.md" multiple hidden></div>
+          <div class="ext-list" id="extList"></div>
+        </div>
+        <textarea class="notes-area" id="notesArea" spellcheck="true" placeholder="e.g.&#10;We are the ... team. Client: ... &#10;Speaker at 11:06 is .....&#10;Don't call the system “XXXXX” — it's XXXXXY.&#10;&#10;## Corrections (speech-to-text: heard → meant)&#10;- &quot;hybrids&quot; → &quot;Hybris&quot;&#10;&#10;## Who said it (quote &lt;-- who said it)&#10;- &quot;Let's come back to pricing later&quot; &lt;-- Jane Doe"></textarea>
         <div class="notes-foot"><span class="mono" id="notesPath"></span></div>
       </div>
     </aside>
