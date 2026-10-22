@@ -5,6 +5,7 @@ A *session* is one recording: projects/<project>/transcripts/transcript_<sid>.tx
 chat history, events) live in projects/<project>/sessions/<sid>/.
 """
 
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -18,19 +19,22 @@ LINE_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s?(.*)$")
 SPEAKER_RE = re.compile(r"^\[Speaker (\d+)\]\s?(.*)$", re.S)
 SHOT_RE = re.compile(r"^\[screenshot: (.+)\]$")
 SEL_RE = re.compile(r"^\[selection: (.*)\]$", re.S)
-SHOT_NAME_RE = re.compile(r"screenshot_(\d{8})_(\d{6})")
+SHOT_NAME_RE = re.compile(r"(?:screenshot|frame)_(\d{8})_(\d{6})")
 
 DEFAULT_SETTINGS = {
     "beautify_engine": "claude",      # claude (Claude Code CLI) | api (Gemini/OpenAI)
     "beautify_model": "opus",
     "chat_model": "sonnet",
     "api_model": "",                  # for the api engine; empty = provider default
-    "auto_final_beautify": True,
+    "auto_final_beautify": True,      # offer (ask) to build the final version when recording stops
+    "engine": "whisper",              # ASR engine: whisper | gigaam | parakeet
     "lang": "auto",
     "speakers": "auto",
     "minutes": 180,
     "pause": 1.5,
     "save_audio": False,
+    "auto_frames": False,             # automatic screen frames (autoframes.py) from the start
+    "frames_l1": True,                # auto frames Level 1 (frames_l1.py, CLIP); off = Level 0 only
     "recorder_python": "",            # empty = same interpreter as server.py
     "last_project": "",
 }
@@ -43,6 +47,8 @@ DEFAULT_PROJECT_SETTINGS = {
 
 CORRECTION_RE = re.compile(r'^\s*[-*]\s*"(.+?)"\s*(?:→|->)\s*"(.+?)"')
 CORRECTIONS_HEADING = "## Corrections"
+SPEAKERS_HEADING = "## Who said it"
+SPEAKER_NOTE_RE = re.compile(r'^\s*(?:[-*]\s*)?".+?"\s*<--\s*(.+?)(?:\s{2,}\(at [\d:]+\))?\s*$')
 
 
 def _read_json(path: Path, default):
@@ -119,14 +125,16 @@ def save_notes(project: str, text: str):
     tmp.replace(path)
 
 
-def add_correction(project: str, original: str, fixed: str, comment: str = "") -> str:
-    """Append '- "original" → "fixed"' under the Corrections heading."""
-    clean = lambda t: " ".join(t.split()).replace('"', "'")
-    line = f'- "{clean(original)}" → "{clean(fixed)}"' + (f"  ({clean(comment)})" if comment.strip() else "")
+def _clean(t: str) -> str:
+    return " ".join(t.split()).replace('"', "'")
+
+
+def _append_under(project: str, heading: str, heading_line: str, line: str) -> str:
+    """Append a line at the end of the '## heading' section of the notes (creating the section)."""
     text = load_notes(project).rstrip("\n")
     lines = text.split("\n") if text else []
     try:
-        start = next(i for i, l in enumerate(lines) if l.strip().lower().startswith(CORRECTIONS_HEADING.lower()))
+        start = next(i for i, l in enumerate(lines) if l.strip().lower().startswith(heading.lower()))
         end = start + 1
         while end < len(lines) and not lines[end].startswith("#"):
             end += 1
@@ -136,10 +144,26 @@ def add_correction(project: str, original: str, fixed: str, comment: str = "") -
     except StopIteration:
         if lines:
             lines.append("")
-        lines += [CORRECTIONS_HEADING + " (speech-to-text: heard → meant)", line]
+        lines += [heading_line, line]
     text = "\n".join(lines) + "\n"
     save_notes(project, text)
     return text
+
+
+def add_correction(project: str, original: str, fixed: str, comment: str = "") -> str:
+    """Append '- "original" → "fixed"' under the Corrections heading."""
+    line = f'- "{_clean(original)}" → "{_clean(fixed)}"' + (f"  ({_clean(comment)})" if comment.strip() else "")
+    return _append_under(project, CORRECTIONS_HEADING, CORRECTIONS_HEADING + " (speech-to-text: heard → meant)", line)
+
+
+def add_speaker(project: str, quote: str, speaker: str, time: str = "") -> str:
+    """Append '- "quote" <-- Speaker' under the Speakers heading."""
+    line = f'- "{_clean(quote)}" <-- {_clean(speaker)}' + (f"  (at {time})" if time else "")
+    return _append_under(project, SPEAKERS_HEADING, SPEAKERS_HEADING + " (quote <-- who said it)", line)
+
+
+def known_speakers(text: str) -> list[str]:
+    return list(dict.fromkeys(m.group(1).strip() for m in (SPEAKER_NOTE_RE.match(l) for l in text.splitlines()) if m))
 
 
 def parse_corrections(text: str) -> list[tuple[str, str]]:
@@ -237,7 +261,15 @@ def parse_transcript(text: str) -> list[dict]:
     for e in entries:
         if e["kind"] == "selection" and e["text"].endswith("]"):
             e["text"] = e["text"][:-1]
+        e["key"] = line_key(e)
     return entries
+
+
+def line_key(e: dict) -> str:
+    """Stable id of a transcript line for hiding: time + text hash (screenshots: file name)."""
+    if e.get("kind") == "screenshot":
+        return Path(e.get("path", "")).name
+    return f'{e["time"]}|{hashlib.sha1(e.get("text", "").strip().encode("utf-8")).hexdigest()[:10]}'
 
 
 def shot_time(path: str) -> str:
@@ -313,6 +345,106 @@ def delete_screenshot(project: str, path: str) -> Path:
     return trash / p.name
 
 
+# ── Auto frames + visibility ────────────────────────────────────────────────
+# Lines, screenshots and auto frames can be hidden ("not needed") in the UI. The transcript
+# itself is never changed: hidden items live in sessions/<sid>/visibility.json and are left
+# out of what Beautify gets. Visible auto frames are added to it as screenshots.
+
+def frames_dir(project: str, sid: str) -> Path:
+    return project_dir(project) / "frames" / safe_name(sid)
+
+
+def load_scenes(project: str, sid: str) -> list[dict]:
+    p = frames_dir(project, sid) / "scenes.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))["scenes"]
+    except Exception:
+        return []
+
+
+def visibility_path(project: str, sid: str) -> Path:
+    return session_dir(project, sid) / "visibility.json"
+
+
+def load_visibility(project: str, sid: str) -> dict:
+    v = _read_json(visibility_path(project, sid), {"lines": [], "shots": [], "frames": []})
+    return {"lines": list(v.get("lines", [])), "shots": list(v.get("shots", [])),
+            "frames": [int(x) for x in v.get("frames", [])]}
+
+
+def save_visibility(project: str, sid: str, vis: dict) -> dict:
+    vis = {"lines": sorted(set(vis["lines"])), "shots": sorted(set(vis["shots"])),
+           "frames": sorted({int(x) for x in vis["frames"]})}
+    _write_json(visibility_path(project, sid), vis)
+    return vis
+
+
+def set_hidden(project: str, sid: str, kind: str, key, hidden: bool) -> dict:
+    field = {"line": "lines", "shot": "shots", "frame": "frames"}[kind]
+    vis = load_visibility(project, sid)
+    key = int(key) if kind == "frame" else str(key)
+    items = set(vis[field])
+    if hidden:
+        items.add(key)
+    else:
+        items.discard(key)
+    vis[field] = list(items)
+    return save_visibility(project, sid, vis)
+
+
+def set_hidden_many(project: str, sid: str, kind: str, keys: list, hidden: bool) -> tuple[dict, list]:
+    """Hide/show several items; returns (visibility, keys whose state actually changed)."""
+    field = {"line": "lines", "shot": "shots", "frame": "frames"}[kind]
+    vis = load_visibility(project, sid)
+    items = set(vis[field])
+    keys = [int(k) if kind == "frame" else str(k) for k in keys]
+    changed = [k for k in keys if (k in items) != hidden]
+    items = items | set(keys) if hidden else items - set(keys)
+    vis[field] = list(items)
+    return save_visibility(project, sid, vis), changed
+
+
+def frame_groups(scenes: list[dict]) -> list[dict]:
+    """One entry per distinct image: revisits (same_as) are folded into their original."""
+    groups = {s["id"]: {**s, "shows": [[s["wall_start"], s["wall_end"]]]} for s in scenes if not s.get("same_as")}
+    for s in scenes:
+        g = groups.get(s.get("same_as"))
+        if g:
+            g["shows"].append([s["wall_start"], s["wall_end"]])
+    return list(groups.values())
+
+
+def beautify_text(project: str, sid: str) -> str:
+    """The transcript as Beautify should see it: hidden lines and screenshots removed,
+    visible auto frames inserted as "[HH:MM:SS] [screenshot: path]" at their time."""
+    vis = load_visibility(project, sid)
+    hidden_lines, hidden_shots, hidden_frames = set(vis["lines"]), set(vis["shots"]), set(vis["frames"])
+    blocks: list[tuple[str, str]] = []   # (time, text incl. continuation lines)
+    for raw in read_transcript(project, sid).splitlines():
+        m = LINE_RE.match(raw)
+        if m:
+            blocks.append((m.group(1), raw))
+        elif blocks:
+            blocks[-1] = (blocks[-1][0], blocks[-1][1] + "\n" + raw)
+    kept = []
+    for t, text in blocks:
+        e = parse_transcript(text)
+        e = e[0] if e else None
+        if e and (e["key"] in hidden_lines or (e["kind"] == "screenshot" and e["key"] in hidden_shots)):
+            continue
+        kept.append((t, text))
+    for g in sorted(frame_groups(load_scenes(project, sid)), key=lambda g: g["wall_start"], reverse=True):
+        if g["id"] in hidden_frames:
+            continue
+        path = g.get("last_path") or g["path"]
+        if not Path(path).exists():
+            continue
+        t = g["wall_start"][11:19]
+        pos = next((i for i, (bt, _) in enumerate(kept) if bt > t), len(kept))
+        kept.insert(pos, (t, f"[{t}] [screenshot: {path}]"))
+    return "".join(text + "\n" for _, text in kept)
+
+
 def load_session(project: str, sid: str) -> dict:
     path = transcript_path(project, sid)
     entries = parse_transcript(read_transcript(project, sid))
@@ -326,6 +458,7 @@ def load_session(project: str, sid: str) -> dict:
         "screenshots": shots,
         "diarized": path.with_suffix(".raw.txt").exists(),
         "manifest": public_manifest(project, sid, manifest),
+        "visibility": load_visibility(project, sid),
     }
 
 

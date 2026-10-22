@@ -6,7 +6,7 @@ Built for narrating what's on screen -- record a coding session, walkthrough, or
 
 ## Features
 
-- Real-time transcription using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (runs locally, no cloud API)
+- Real-time transcription, fully local (no cloud API), with a choice of engines: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (default), [GigaAM v3](https://github.com/salute-developers/GigaAM) or [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) via [onnx-asr](https://github.com/istupakov/onnx-asr) -- see [ASR engines](#asr-engines)
 - Voice Activity Detection via [Silero VAD](https://github.com/snakers4/silero-vad) -- only transcribes when you speak
 - Automatic language detection (Russian/English) with periodic re-evaluation
 - Global hotkeys for screenshots (`Ctrl+Shift+S`) and text selection capture (`Ctrl+Shift+W`)
@@ -29,7 +29,7 @@ Microphone -----> | sounddevice|
                   +-----------+       +--------+---------+
                                                |
                                     +----------v-----------+
-                                    | Whisper (faster-whisper)|
+                                    | ASR engine (asr_engines)|
                                     +----------+-----------+
                                                |
                          +---------------------+---------------------+
@@ -55,7 +55,7 @@ The system runs several threads concurrently:
 
 1. **Audio capture** -- `sounddevice` streams microphone input at 16kHz mono
 2. **VAD loop** (main thread) -- Silero VAD processes 32ms windows, detects speech start/end based on configurable silence threshold
-3. **Transcription worker** -- dequeues speech segments, runs Whisper, writes timestamped lines to the transcript file
+3. **Transcription worker** -- dequeues speech segments, runs the ASR engine (Whisper / GigaAM / Parakeet), writes timestamped lines to the transcript file
 4. **Embedding worker** (optional) -- computes speaker embeddings for phrase-level audio chunks for post-session diarization
 5. **OCR worker** -- processes screenshots through EasyOCR, saves recognized text alongside images
 6. **Screenshot helper** -- a native macOS binary (Swift/Carbon) that registers system-wide hotkeys and captures the full screen, an area or a single window (configurable via a JSON file it re-reads on every capture). It also provides the area/window picker overlays used by the web UI (`--select-region`, `--pick-window`, `--list-windows`, `--capture`)
@@ -103,6 +103,10 @@ python main.py myproject --save-audio
 
 # Adjust silence threshold (seconds)
 python main.py myproject --pause 2.0
+
+# Another recognition engine (see "ASR engines")
+python main.py myproject --engine gigaam
+python main.py myproject --engine parakeet --vocab-file notes.md --vocab-correct
 ```
 
 During recording:
@@ -141,11 +145,18 @@ VOICE_REC_PYTHON=/path/to/python ./webui.sh --port 9000 --no-browser
   - *Full rebuild* regenerates the whole document.
   - *Final* runs automatically when recording stops. It uses the diarized transcript and is also copied to `docs/`.
 - **Ask**: chat about the transcript (live or saved) while recording keeps running. It follows up with only the new lines.
+- **Notes**: one file per project, `projects/<name>/notes.md`, sent with every Beautify and Ask request as authoritative context: who's who, the client, terms that are often misheard. Edits are saved as you type.
 
 Per-project settings (gear icon) live in `projects/<name>/project.json`:
 - **Knowledge folder**: Claude Code runs there, so its MCP servers (e.g. `claude-context`) are available for callouts.
 - **Style reference**: the HTML whose look to copy. Defaults to `templates/annotated_transcript_style.html`.
-- **Context notes**: who's who, client name, terms that are often misheard.
+
+**Corrections and speakers from a selection.** Select text in the transcript or in a Beautified version and a popover offers two modes:
+
+- *Fix text*: adds `- "heard" → "meant"` under `## Corrections` in the notes. Beautify and Ask apply it everywhere (other spellings too), and the recorder uses it as a vocabulary hint (`--vocab-file`).
+- *Who said it*: adds `- "quote" <-- Name  (at HH:MM:SS)` under `## Who said it`. Beautify attributes that turn to the person and uses it to recognise the same voice elsewhere; an *Update* run re-checks speakers in the existing part as well. Names already known (from these lines or an external transcript) are suggested.
+
+**External transcript.** Another tool's transcript of the same meeting (e.g. Microsoft Teams: `.vtt`, `.docx`, `.txt`, `.srt`) can be uploaded or dropped in the Notes tab. It usually has reliable speaker names but garbled brands and terms, while ours is the other way round, so Beautify merges the two: speakers from the external one, terms and times from ours, and anything ours missed recovered from it. Files go to `projects/<name>/external/` (the original, a normalized `<name>.transcript.txt` with merged `[HH:MM:SS] Speaker: text` turns, and `index.json`). Each file belongs to the session that was open when it was uploaded; click its label to use it for all sessions of the project instead. Ask is told about it too.
 
 Beautify also works from the console:
 
@@ -153,7 +164,7 @@ Beautify also works from the console:
 python beautify.py myproject 20260928_110051 --mode full     # or: latest, --mode final
 ```
 
-Files: versions in `projects/<p>/sessions/<sid>/vN.html` (+ `manifest.json`, transcript snapshots, `chat.json`, `events.jsonl`); UI state in `.webui/`.
+Files: versions in `projects/<p>/sessions/<sid>/vN.html` (+ `manifest.json`, transcript snapshots, `chat.json`, `events.jsonl`); notes in `projects/<p>/notes.md`; external transcripts in `projects/<p>/external/`; UI state in `.webui/`.
 
 ### Re-diarization
 
@@ -195,13 +206,96 @@ python process_transcript.py myproject 2026-06-18 --provider openrouter
 
 Output goes to `projects/myproject/docs/` as both `.txt` and `.html`.
 
+## ASR engines
+
+`--engine` picks the speech recognizer (`asr_engines.py`). All engines feed the same transcript format and word timestamps, so diarization, screenshots and the web UI work the same with each.
+
+| Engine | Model | Languages | Notes |
+|---|---|---|---|
+| `whisper` (default) | faster-whisper `large-v3-turbo`, int8 | any, auto-detect | Supports vocab hints (`hotwords`); slowest on CPU; can hallucinate on silence |
+| `gigaam` | GigaAM v3 e2e RNN-T (`gigaam-v3-e2e-rnnt`), int8 | Russian only | Best for Russian; punctuation, ё; `--lang en` is refused |
+| `parakeet` | NVIDIA Parakeet TDT 0.6B v3, int8 | 25 European incl. ru/en, auto-detect | Good for mixed ru/en; weaker than GigaAM on Russian |
+
+- `--asr-model` overrides the model: a Whisper size, or an onnx-asr name such as `gigaam-v3-e2e-ctc`.
+- GigaAM and Parakeet have no `hotwords`. With `--vocab-correct`, `- "heard" → "meant"` lines from `--vocab-file` are applied to the output as replacements instead.
+- Long phrases are split into ≤20 s (GigaAM) / ≤60 s (Parakeet) chunks at the quietest point, since the models degrade on long input.
+- Models download into the Hugging Face cache on first use (GigaAM ~250 MB, Parakeet ~700 MB). To fetch them ahead of time:
+
+  ```bash
+  python -c "import onnx_asr; onnx_asr.load_model('gigaam-v3-e2e-rnnt', quantization='int8')"
+  python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', quantization='int8')"
+  ```
+
+Measured on an M3 Max, CPU, 140 s of Russian speech in 7 phrases (`bench_asr.py`):
+
+| Engine | Compute | RTF | Peak RAM |
+|---|---|---|---|
+| whisper | 90.0 s | 0.64 | 2.3 GB |
+| gigaam | 4.4 s | 0.031 | 0.7 GB |
+| gigaam-ctc | 4.3 s | 0.030 | 0.6 GB |
+| parakeet | 4.8 s | 0.034 | 1.6 GB |
+
+To compare engines on your own recording (run it while the recorder is stopped):
+
+```bash
+python bench_asr.py projects/myproject/recording_20261007_083740.mp3 --start 60 --dur 300 --ref reference.txt
+```
+
+`--ref` is a hand-corrected transcript of the same range; with it the script reports WER/CER. Per-engine transcripts go to `bench_out/`.
+
+## Auto frames
+
+Instead of (or besides) pressing the hotkey, the screen can be captured every second and only the frames worth keeping are stored. Turn it on with `--auto-frames 1`, the **Auto frames** switch before recording, or the **Auto** button while recording.
+
+```bash
+python main.py myproject 60 --auto-frames 1
+```
+
+How frames are filtered (`autoframes.py`, Level 0, pixels only, ~20 ms per frame):
+
+- a frame becomes a candidate only after the screen has stood still for 1.5 s after a change, so transitions, scrolling in progress, typing and talking heads never qualify;
+- regions that keep moving (a webcam picture-in-picture) are masked out; a mostly-moving frame is treated as video and skipped; a still frame with motion and little detail elsewhere is treated as a camera view and skipped;
+- a candidate opens a new *scene* if its changed area differs from the current scene by more than 3%, otherwise it extends the scene (or, between 0.5% and 3%, replaces the scene's "last state" image, e.g. a form being filled in);
+- going back to a recent slide is recorded as a revisit (`same_as`), a vertically shifted frame is marked `scroll_of`.
+
+**Detect video** (capture popover). When the capture is a whole browser or call window, most of it is static page and the video is one rectangle, so slide changes look tiny and slides get merged. With the video playing, *Detect video* watches the area for ~6 s and finds the player (`video_detect.py`): a decoded video flickers by a level or two even on a still slide while a rendered page is bit-for-bit static, so the flickering blob is the video; it is snapped to the player border if one is visible, otherwise grown to a video aspect ratio and padded. A paused video is found by its border alone. The crop is drawn on the capture preview: drag it to move, drag an edge or corner to resize (or *Set by hand* without detecting); it takes effect on the next frame, even mid-recording. The crop (`frames_crop` in the capture config, fractions of the area) applies to auto frames only; screenshots stay whole; choosing another capture area resets it.
+
+Besides the changed area, a candidate also counts as a new scene when more than half of the slide's *content* changed (a new title on a dark, almost empty slide), and drift is measured from the scene's first state too, so small steps can't add up to swallowing a slide.
+
+Scenes are saved in `projects/<project>/frames/<session>/` (`scenes.json` + JPEGs) and shown in the transcript at the moment they appeared (marked *auto*); clicking a card in the **Frames** tab scrolls the transcript there. The transcript file itself is not changed.
+
+**Hiding.** Every transcript line, screenshot and auto frame has an eye button (on hover). A hidden line stays in place, faded; a hidden screenshot or frame turns grey. Hidden items are kept in `sessions/<session>/visibility.json` and **left out of Beautify**; everything visible goes in, and visible auto frames are given to it as screenshots at their time. Next to the eye, a second button hides **this and the ones like it** in one click (Undo in the notice): for lines, the same words after normalising, or mostly the same character trigrams for longer ones (recognizer hallucinations, repeated phrases, "угу"); for pictures, every screenshot and frame whose CLIP embedding is ≥ 0.88 to it (`similar.py`; the same talking head at different times was ≥ 0.93, different slides ≤ 0.84). Embeddings are cached in `.emb/` next to the images; Level 1 writes them while recording. **Pick** (Frames tab) keeps the N frames with most said about them (pointing phrases like "вот здесь", "as you can see", time on screen, words, novelty) and hides the rest; the eye brings any frame back. From the console:
+
+```bash
+python select_frames.py myproject 20261016_120000 -n 10 --apply
+```
+
+When a recording stops, the UI asks whether to build the final version (Settings → *Offer to build the final version*); "Not now" leaves the **Beautify** button for later.
+
+To tune thresholds on a recorded talk (and measure recall against hand-made screenshots of it):
+
+```bash
+python autoframes.py talk.mp4 --out /tmp/frames [--truth projects/x/screenshots] [--scene-frac 0.03 ...]
+```
+
+It writes `index.html` with every scene for a quick look.
+
+**Level 1** (`frames_l1.py`, on by default) runs CLIP ViT-B/32 (~14 ms per candidate on MPS, downloaded once, ~600 MB) on each Level-0 candidate:
+
+- zero-shot class (slide, diagram, table, code, web, document, face, desktop), shown on the frame cards; a frame that is mostly a face, a webcam or a video call is dropped (`p(face) ≥ 0.6`);
+- semantic dedup: a candidate with cosine ≥ 0.92 to a recent scene is that scene again (its "last state", or a revisit); 0.85–0.92 is kept but marked `l1_near`, and **Pick** takes only one of such a pair.
+
+On a slide talk, different slides were ≤ 0.84 apart and the same slide later ≥ 0.966. Turn it off with `--no-frames-l1` (console), the *Smart filter* switch in Settings (web UI), or `--no-l1` (offline); if the model can't load, auto frames run on Level 0 alone.
+
+Planned: Level 2 (OCR + VLM caption) as an `Enricher`, and a final pick by a text LLM over the transcript and scene list.
+
 ## Configuration
 
 Key constants in `main.py`:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `MODEL_SIZE` | `large-v3-turbo` | Whisper model variant |
+| `MODEL_SIZE` | `large-v3-turbo` | Whisper model variant (`--engine whisper`) |
 | `DEVICE` | `cpu` | Inference device (`cpu` or `cuda`) |
 | `COMPUTE_TYPE` | `int8` | Quantization for faster-whisper |
 | `VAD_THRESHOLD` | `0.5` | Speech probability threshold |
@@ -214,6 +308,13 @@ Key constants in `main.py`:
 | File | Purpose |
 |---|---|
 | `main.py` | Main app: audio capture, VAD, transcription, screenshot integration |
+| `asr_engines.py` | Speech recognition engines (Whisper, GigaAM, Parakeet) behind one interface |
+| `autoframes.py` | Auto frames: Level-0 triage of the 1 fps capture into scenes; offline mode for videos |
+| `video_detect.py` | Find the playing video in a captured window (crop for auto frames) |
+| `similar.py` | "Hide this and similar" for pictures (CLIP embeddings, cached) |
+| `frames_l1.py` | Auto frames Level 1: CLIP class (drops faces) and semantic dedup |
+| `select_frames.py` | Score scenes against the transcript, keep the best N visible (hide the rest) |
+| `bench_asr.py` | Compare engines on a recording: speed, memory, WER/CER |
 | `screenshot_helper.swift` | Native macOS helper for global hotkeys and screen capture |
 | `speaker_id.py` | Speaker embedding (ECAPA-TDNN) and agglomerative clustering |
 | `rediarize.py` | Re-run diarization on saved sessions with different parameters |
@@ -222,7 +323,8 @@ Key constants in `main.py`:
 | `web/` | Web UI front end (static HTML/CSS/JS, no build step, Electron-ready) |
 | `beautify.py` | Full annotated transcript via Claude Code (also a console tool) |
 | `claude_cli.py` | Helpers for headless `claude -p` (stream-json parsing, progress labels) |
-| `sessions.py` | Transcript parsing, session listing, settings, beautify manifests |
+| `sessions.py` | Transcript parsing, session listing, settings, notes (corrections, speakers), beautify manifests |
+| `external.py` | External transcripts (Teams etc.): parsing, storage, binding to sessions |
 | `events.py` | Optional JSON-lines event stream from `main.py --events` |
 | `templates/annotated_transcript_style.html` | Default style reference for Beautify |
 | `requirements.txt` | Python dependencies |

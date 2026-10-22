@@ -9,6 +9,9 @@ import CoreGraphics
 //       Daemon: global hotkeys (Ctrl+Shift+S screenshot, Ctrl+Shift+W selection).
 //       Also accepts "SNAP" lines on stdin. The capture config is re-read on every
 //       screenshot, so the capture area can be changed while recording.
+//       "AUTO <seconds>" starts automatic frames: every <seconds> a JPEG of the capture
+//       area goes to <output-dir>/.frames/ and "FRAME:<path>" is printed (no flash).
+//       "AUTO OFF" stops them. main.py decides which frames are worth keeping.
 //   screenshot_helper --select-region     Drag-select overlay → prints REGION:{json}
 //   screenshot_helper --pick-window       Click-a-window overlay → prints WINDOW:{json}
 //   screenshot_helper --list-windows      Prints on-screen windows as a JSON array
@@ -18,6 +21,8 @@ import CoreGraphics
 //   {"mode": "full"}
 //   {"mode": "region", "rect": {"x":..,"y":..,"w":..,"h":..}}   global coords, points, top-left origin
 //   {"mode": "window", "windowId": 123, "owner": "Microsoft Teams", "title": "..."}
+//   Optional "frames_crop": {"x":..,"y":..,"w":..,"h":..} in fractions of the captured image
+//   (set by "Detect video"): automatic frames keep only that part. Screenshots stay whole.
 
 var gScreenshotDir = ""
 var gConfigPath: String? = nil
@@ -30,6 +35,7 @@ struct CaptureConfig {
     var windowID: CGWindowID = 0
     var owner = ""
     var title = ""
+    var framesCrop: CGRect? = nil     // fractions of the captured image
 }
 
 func num(_ v: Any?) -> CGFloat {
@@ -50,6 +56,10 @@ func loadConfig(_ path: String?) -> CaptureConfig {
     c.windowID = CGWindowID(num(obj["windowId"]))
     c.owner = obj["owner"] as? String ?? ""
     c.title = obj["title"] as? String ?? ""
+    if let r = obj["frames_crop"] as? [String: Any] {
+        let f = CGRect(x: num(r["x"]), y: num(r["y"]), width: num(r["w"]), height: num(r["h"]))
+        if f.width > 0.02 && f.height > 0.02 { c.framesCrop = f }
+    }
     return c
 }
 
@@ -114,6 +124,15 @@ func captureImage(_ c: CaptureConfig) -> (CGImage, CGRect)? {
     }
     guard let img = CGDisplayCreateImage(CGMainDisplayID()) else { return nil }
     return (img, CGDisplayBounds(CGMainDisplayID()))
+}
+
+func writeJPEG(_ image: CGImage, _ path: String, quality: Double = 0.85) -> Bool {
+    let url = URL(fileURLWithPath: path)
+    guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil) else {
+        return false
+    }
+    CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+    return CGImageDestinationFinalize(dest)
 }
 
 func writePNG(_ image: CGImage, _ path: String) -> Bool {
@@ -184,6 +203,55 @@ func takeScreenshot() {
         flash(rect)
     } else {
         fputs("[screenshot-helper] failed to write PNG\n", stderr)
+    }
+}
+
+// ── Automatic frames ("AUTO <seconds>" on stdin) ────────────────────────────
+
+let gFrameQueue = DispatchQueue(label: "auto-frames", qos: .utility)
+var gFrameTimer: DispatchSourceTimer? = nil
+var gFrameBusy = false   // touched only on gFrameQueue
+
+func takeFrame() {
+    if gFrameBusy { return }    // previous capture still running: skip this tick
+    gFrameBusy = true
+    defer { gFrameBusy = false }
+    let dir = (gScreenshotDir as NSString).appendingPathComponent(".frames")
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyyMMdd_HHmmss_SSS"
+    let path = (dir as NSString).appendingPathComponent("frame_\(formatter.string(from: Date())).jpg")
+    let config = loadConfig(gConfigPath)
+    guard var (image, _) = captureImage(config) else {
+        fputs("[screenshot-helper] frame capture failed\n", stderr)
+        return
+    }
+    if let f = config.framesCrop {
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        let px = CGRect(x: f.minX * w, y: f.minY * h, width: f.width * w, height: f.height * h)
+            .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+        if px.width >= 16, px.height >= 16, let cropped = image.cropping(to: px) { image = cropped }
+    }
+    if writeJPEG(image, path) {
+        print("FRAME:\(path)")
+        fflush(stdout)
+    }
+}
+
+func setAutoFrames(_ interval: Double?) {
+    gFrameQueue.async {
+        gFrameTimer?.cancel()
+        gFrameTimer = nil
+        guard let iv = interval, iv > 0 else {
+            fputs("[screenshot-helper] auto frames off\n", stderr)
+            return
+        }
+        let t = DispatchSource.makeTimerSource(queue: gFrameQueue)
+        t.schedule(deadline: .now(), repeating: iv, leeway: .milliseconds(50))
+        t.setEventHandler { takeFrame() }
+        t.resume()
+        gFrameTimer = t
+        fputs("[screenshot-helper] auto frames every \(iv)s\n", stderr)
     }
 }
 
@@ -509,14 +577,18 @@ RegisterEventHotKey(
     &hotKeyRef2
 )
 
-// stdin commands (used by main.py --control-stdin): "SNAP" takes a screenshot.
+// stdin commands from main.py: "SNAP" takes a screenshot, "AUTO <sec>" / "AUTO OFF" auto frames.
 DispatchQueue.global(qos: .userInitiated).async {
     while let line = readLine() {
         let cmd = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if cmd == "SNAP" {
             DispatchQueue.main.async { takeScreenshot() }
+        } else if cmd.hasPrefix("AUTO") {
+            let arg = cmd.dropFirst(4).trimmingCharacters(in: .whitespaces)
+            setAutoFrames(arg.uppercased() == "OFF" ? nil : (Double(arg) ?? 1.0))
         }
     }
+    setAutoFrames(nil)
 }
 
 fputs("Helper ready (Ctrl+Shift+S: screenshot, Ctrl+Shift+W: selection)\n", stderr)

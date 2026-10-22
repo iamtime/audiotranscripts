@@ -24,6 +24,10 @@ const st = {
   claude: true,
   unreadChat: false,
   notes: { text: '', dirty: false, path: '' },
+  external: { files: [], speakers: [] },
+  frames: { scenes: [], selection: null, stats: null, busy: false },
+  vis: { lines: new Set(), shots: new Set(), frames: new Set() },   // hidden items (left out of Beautify)
+  starting: false,
 };
 const CLIENT_ID = Math.random().toString(36).slice(2);
 
@@ -47,7 +51,12 @@ const ICON = {
   window: '<svg viewBox="0 0 24 24" class="ico"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8.5h18M6 6.3h.01M8.5 6.3h.01"/><path d="M14 13l4 4M18 13.5V17h-3.5"/></svg>',
   chat: '<svg viewBox="0 0 20 20" class="ico"><path d="M4 4.5h12a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H9l-4 3v-3H4A1.5 1.5 0 0 1 2.5 13V6A1.5 1.5 0 0 1 4 4.5z"/></svg>',
   trash: '<svg viewBox="0 0 20 20" class="ico"><path d="M4 6h12M8 6V4.5h4V6M6 6l.7 9.6a1.5 1.5 0 0 0 1.5 1.4h3.6a1.5 1.5 0 0 0 1.5-1.4L14 6M8.5 9v5M11.5 9v5"/></svg>',
+  pause: '<svg viewBox="0 0 20 20" class="ico"><path d="M7.5 5v10M12.5 5v10"/></svg>',
+  play: '<svg viewBox="0 0 20 20" class="ico"><path d="M7 5l8 5-8 5z"/></svg>',
   open: '<svg viewBox="0 0 16 16" class="ico" style="width:14px;height:14px"><path d="M9 3h4v4M13 3L7.5 8.5M11 9.5V13H3V5h3.5"/></svg>',
+  eye: '<svg viewBox="0 0 20 20" class="ico"><path d="M1.8 10S4.8 4.5 10 4.5 18.2 10 18.2 10 15.2 15.5 10 15.5 1.8 10 1.8 10z"/><circle cx="10" cy="10" r="2.6"/></svg>',
+  similar: '<svg viewBox="0 0 20 20" class="ico"><path d="M5.6 6.5A11 11 0 0 0 2.5 10s2.5 4.5 7 4.5c1 0 1.9-.2 2.7-.5M8 5.7a7 7 0 0 1 1.5-.2c4.5 0 7 4.5 7 4.5a11.6 11.6 0 0 1-1.4 2M3.5 3.5l12 12"/><path d="M14.5 2.5h3v3M17.5 2.5l-3 3" /></svg>',
+  eyeOff: '<svg viewBox="0 0 20 20" class="ico"><path d="M8.2 4.7A8 8 0 0 1 10 4.5c5.2 0 8.2 5.5 8.2 5.5a14 14 0 0 1-2.4 3.1M5.3 6.2A13.6 13.6 0 0 0 1.8 10s3 5.5 8.2 5.5a7.7 7.7 0 0 0 3.6-.9M8.2 8.3a2.6 2.6 0 0 0 3.5 3.5M3 3l14 14"/></svg>',
 };
 
 // ── API ────────────────────────────────────────────────────────────────────
@@ -66,10 +75,12 @@ async function api(method, url, body) {
 }
 const sessUrl = (p = st.project, s = st.sid) => `/api/projects/${encodeURIComponent(p)}/sessions/${encodeURIComponent(s)}`;
 
-function toast(text, level = 'info', ms = 4200) {
+function toast(text, level = 'info', ms = 4200, action = null) {
   const el = document.createElement('div');
   el.className = `toast ${level}`;
-  el.innerHTML = (level === 'ok' ? '<svg viewBox="0 0 20 20" class="ico"><path d="M5 10.5l3 3 7-7"/></svg>' : '') + `<span>${esc(text)}</span>`;
+  el.innerHTML = (level === 'ok' ? '<svg viewBox="0 0 20 20" class="ico"><path d="M5 10.5l3 3 7-7"/></svg>' : '') + `<span>${esc(text)}</span>`
+    + (action ? `<button class="toast-act">${esc(action.label)}</button>` : '');
+  if (action) el.querySelector('.toast-act').onclick = () => { el.remove(); action.fn(); };
   $('#toasts').appendChild(el);
   setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, ms);
 }
@@ -176,8 +187,9 @@ async function loadProjects() {
 async function selectProject(name, { keepSession = false } = {}) {
   st.project = name;
   $('#projectName').textContent = name || '—';
-  if (!keepSession) { st.sid = null; st.session = null; }
+  if (!keepSession) { st.sid = null; st.session = null; resetFrames(); applyVis(null); }
   loadNotes();
+  loadExternal();
   await loadSessions();
   if (!keepSession) {
     const liveSid = recActive() && st.recorder.project === name && st.recorder.sid;
@@ -194,24 +206,31 @@ async function loadSessions() {
 
 async function selectSession(sid, { quiet = false } = {}) {
   st.sid = sid;
+  renderExternal();
   st.docVersion = null;
   try {
     st.session = await api('GET', sessUrl());
   } catch (e) { fail(e); return; }
+  applyVis(st.session.visibility);
+  resetFrames();
   st.follow = true;
   if (!quiet) st.chat = { messages: [], busy: false };
   $('#chatDot').classList.add('hidden');
   $('#sessionName').innerHTML = st.session.live ? `<span style="color:var(--rec)">●</span> Live · ${esc(sidLabel(sid))}` : esc(sidLabel(sid));
   renderAll();
   loadChat();
+  loadFrames();
 }
 
 async function reloadSession() {
   if (!st.project || !st.sid) return;
   try {
     st.session = await api('GET', sessUrl());
+    applyVis(st.session.visibility);
     $('#sessionName').innerHTML = st.session.live ? `<span style="color:var(--rec)">●</span> Live · ${esc(sidLabel(st.sid))}` : esc(sidLabel(st.sid));
     renderTranscript(); renderShots(); renderBeautify(); renderDoc();
+    if (!recActive()) renderControl();
+    loadFrames();
   } catch (e) { /* ignore */ }
 }
 
@@ -264,7 +283,7 @@ function renderSessionMenu() {
     $('#sessionName').textContent = recActive() ? 'Starting…' : 'No sessions';
     return;
   }
-  m.innerHTML = '<div class="group">Sessions</div>' + st.sessions.map(s => {
+  m.innerHTML = '<button class="mi" data-new-session="1"><span class="tick">+</span><span class="mi-main"><div class="mi-title">New session</div><div class="mi-sub">Next recording starts a fresh transcript</div></span></button><div class="sep"></div><div class="group">Sessions</div>' + st.sessions.map(s => {
     const live = recActive() && st.recorder.project === st.project && st.recorder.sid === s.sid;
     const badge = s.final ? '<span class="mini-badge final">FINAL</span>' : s.versions ? `<span class="mini-badge">v${s.versions}</span>` : '';
     return `<button class="mi ${s.sid === st.sid ? 'on' : ''}" data-sid="${esc(s.sid)}">
@@ -275,6 +294,7 @@ function renderSessionMenu() {
   }).join('');
 }
 $('#sessionMenu').addEventListener('click', e => {
+  if (e.target.closest('[data-new-session]')) { closeMenus(); newSession(); return; }
   const b = e.target.closest('.mi[data-sid]'); if (!b) return;
   closeMenus();
   selectSession(b.dataset.sid);
@@ -287,69 +307,102 @@ function renderControl() {
   const r = st.recorder, el = $('#control');
   const s = st.settings;
   const mine = r.project === st.project;
-  if (!r.active && (r.state === 'idle' || !r.state)) {
+  const idle = !r.active && (r.state === 'idle' || !r.state);
+
+  if (idle && !st.starting) {
+    // Start appends to the selected session; "New session" starts a fresh transcript.
+    const cont = st.sid && st.session && !st.session.live;
     el.innerHTML = `
-      <button class="rec-btn" id="startBtn" ${st.project ? '' : 'disabled'}><span class="dot"></span>Start recording</button>
+      <div class="rec-main">
+        <button class="rec-btn" id="recBtn" ${st.project ? '' : 'disabled'}><span class="dot"></span>Start recording</button>
+        <div class="rec-hint">${cont
+          ? `Appends to <b>${esc(sidLabel(st.sid))}</b> · <button class="link-btn" id="newSessBtn">new session instead</button>`
+          : 'Starts a new session'}</div>
+      </div>
       <div class="opt-group">
+        <div class="opt"><span class="opt-label">Engine</span>
+          <select class="field" id="engSel" title="Speech recognition model">${Object.entries(ENGINES).map(([v, e]) => `<option value="${v}" ${(s.engine || 'whisper') === v ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div>
         <div class="opt"><span class="opt-label">Language</span>
-          <div class="seg" id="langSeg">${['auto', 'en', 'ru'].map(l => `<button data-v="${l}" class="${(s.lang || 'auto') === l ? 'on' : ''}">${l === 'auto' ? 'Auto' : l.toUpperCase()}</button>`).join('')}</div></div>
+          <div class="seg" id="langSeg">${['auto', 'en', 'ru'].map(l => `<button data-v="${l}" class="${(s.lang || 'auto') === l ? 'on' : ''}" ${engineBlocksLang(s.engine, l) ? `disabled title="${ENGINES.gigaam.name} recognizes Russian only"` : ''}>${l === 'auto' ? 'Auto' : l.toUpperCase()}</button>`).join('')}</div></div>
         <div class="opt"><span class="opt-label">Speakers</span>
           <select class="field" id="spkSel">${['auto', 'off', '2', '3', '4', '5', '6', '8'].map(v => `<option value="${v}" ${String(s.speakers || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? 'Detect' : v === 'off' ? 'Off' : v}</option>`).join('')}</select></div>
         <div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${s.minutes || 180}"> min</div>
         ${pauseControl(s.pause || 1.5)}
         <label class="switch opt"><input type="checkbox" id="audioChk" ${s.save_audio ? 'checked' : ''}><span class="knob"></span>Save audio</label>
-      </div>
-      <div class="spacer"></div>
-      ${r.detail === 'Session finished' && mine ? '<div class="state-sub">Last session finished · ' + esc(sidLabel(r.sid)) + '</div>' : ''}`;
-    $('#startBtn').onclick = startRecording;
+        <label class="switch opt" title="Capture the screen every second and keep the frames that show something new"><input type="checkbox" id="autoChk" ${s.auto_frames ? 'checked' : ''}><span class="knob"></span>Auto frames</label>
+      </div>`;
+    $('#recBtn').onclick = startRecording;
+    const nb = $('#newSessBtn'); if (nb) nb.onclick = newSession;
     $$('#langSeg button').forEach(b => b.onclick = () => { st.settings.lang = b.dataset.v; renderControl(); });
+    $('#engSel').onchange = e => {
+      st.settings.engine = e.target.value;
+      if (engineBlocksLang(st.settings.engine, st.settings.lang)) st.settings.lang = 'ru';
+      renderControl();
+    };
     $('#spkSel').onchange = e => { st.settings.speakers = e.target.value; };
     $('#minInp').onchange = e => { st.settings.minutes = +e.target.value || 180; };
     $('#audioChk').onchange = e => { st.settings.save_audio = e.target.checked; };
+    $('#autoChk').onchange = e => { st.settings.auto_frames = e.target.checked; };
     bindPause();
     return;
   }
-  if (r.state === 'error') {
+  if (r.state === 'error' && !st.starting) {
     el.innerHTML = `<div><div class="error-text">${esc(r.error || 'Recognizer error')}</div><div class="state-sub mono" style="white-space:pre-wrap;max-height:3.2em;overflow:hidden">${esc((r.detail || '').split('\n').slice(-2).join('\n'))}</div></div>
       <div class="spacer"></div><button class="ghost-btn" id="showConsole">Show console</button><button class="ghost-btn" id="dismissErr">Dismiss</button>`;
     $('#showConsole').onclick = toggleConsole;
     $('#dismissErr').onclick = () => { st.recorder = { state: 'idle' }; renderControl(); };
     return;
   }
-  if (r.state === 'loading') {
-    el.innerHTML = `<div class="spinner"></div><div><div class="state-title">Preparing the recognizer</div><div class="state-sub">${esc(r.detail || 'Loading models…')} · first start can take a minute</div></div>
-      <div class="spacer"></div><button class="stop-btn" id="stopBtn"><span class="sq"></span>Cancel</button>`;
-    $('#stopBtn').onclick = stopRecording;
+  if (st.starting || r.state === 'loading') {
+    el.innerHTML = `
+      <button class="rec-btn busy" disabled><span class="spin-w"></span>Starting recording…</button>
+      <div><div class="state-title">Preparing the recognizer</div>
+        <div class="state-sub">${esc(r.state === 'loading' && r.detail ? r.detail : 'Launching…')} · the first start can take a minute</div></div>`;
     return;
   }
   if (r.state === 'stopping' || r.state === 'finalizing') {
-    el.innerHTML = `<div class="spinner"></div><div><div class="state-title">${r.state === 'stopping' ? 'Stopping…' : 'Finalizing session'}</div>
-      <div class="state-sub">${esc(r.detail || 'Transcribing the remaining speech')}${r.diarization ? ' · then speakers are assigned' : ''}</div></div>
+    el.innerHTML = `
+      <button class="stop-btn busy" disabled><span class="spin-w dark"></span>Stopping…</button>
+      <div><div class="state-title">${r.state === 'stopping' ? 'Finishing the last phrase' : 'Finalizing session'}</div>
+        <div class="state-sub">${esc(r.detail || 'Transcribing the remaining speech')}${r.diarization ? ' · then speakers are assigned' : ''}</div></div>
       <div class="spacer"></div><div class="state-sub">${esc(r.project)} · ${esc(sidLabel(r.sid))}</div>`;
     return;
   }
   // listening
   el.innerHTML = `
-    <div class="rec-state"><span class="rec-pill"><span class="dot"></span>REC</span><span class="timer mono" id="timer">0:00</span></div>
+    <button class="stop-btn" id="recBtn" title="Stop (same as Ctrl+C)"><span class="sq"></span>Stop recording</button>
+    <button class="ghost-btn mute-btn${r.muted ? ' on' : ''}" id="muteBtn" title="${r.muted ? 'Unmute the microphone and continue' : 'Mute the microphone; the session keeps running'}">${r.muted ? ICON.play + 'Resume' : ICON.pause + 'Pause'}</button>
+    <div class="rec-state"><span class="rec-pill${r.muted ? ' paused' : ''}"><span class="dot"></span>${r.muted ? 'PAUSED' : 'REC'}</span><span class="timer mono" id="timer">0:00</span></div>
     <canvas class="meter" id="meter" width="336" height="68"></canvas>
     <div class="pipe-status" id="pipeStatus"></div>
     ${pauseControl(st.pipeline.pause || s.pause || 1.5)}
+    ${r.engine && r.engine !== 'whisper' ? `<span class="chip" title="Speech recognition engine">${esc(ENGINES[r.engine]?.short || r.engine)}</span>` : ''}
     ${r.lang ? `<span class="chip" title="Detected language">${esc(r.lang.toUpperCase())}</span>` : ''}
     ${r.diarization ? '<span class="chip" title="Speaker diarization runs after the session">SPEAKERS</span>' : ''}
     <div class="spacer"></div>
     ${!mine ? `<span class="state-sub">Recording in <b>${esc(r.project)}</b></span>` : ''}
-    <button class="ghost-btn" id="snapBtn" title="Take a screenshot of the capture area">${ICON.camera}Snap</button>
-    <button class="stop-btn" id="stopBtn" title="Stop (same as Ctrl+C)"><span class="sq"></span>Stop</button>`;
-  $('#stopBtn').onclick = stopRecording;
+    <button class="ghost-btn auto-btn${r.auto_frames ? ' on' : ''}" id="autoBtn" title="${r.auto_frames ? 'Stop automatic frames' : 'Capture the screen every second and keep the frames that show something new'}"><span class="auto-dot"></span>Auto${r.auto_frames && r.frame_stats && r.frame_stats.scenes != null ? ` · ${r.frame_stats.scenes}` : ''}</button>
+    <button class="ghost-btn" id="snapBtn" title="Take a screenshot of the capture area">${ICON.camera}Snap</button>`;
+  $('#autoBtn').onclick = toggleAutoFrames;
+  $('#recBtn').onclick = stopRecording;
+  $('#muteBtn').onclick = toggleMute;
   $('#snapBtn').onclick = snap;
   bindPause();
   renderPipeline();
   tickTimer();
 }
 
+function newSession() {
+  st.sid = null; st.session = null; st.chat = { messages: [], busy: false };
+  applyVis(null);
+  $('#sessionName').textContent = 'New session';
+  renderAll();
+  loadFrames();
+}
+
 function pauseControl(v) {
   return `<div class="opt" title="How long a silence ends a phrase. Shorter: text appears sooner, in smaller pieces. Longer: fewer, longer chunks. Can be changed while recording.">
-    <span class="opt-label">Pause</span><input class="field num" id="pauseInp" type="number" min="0.2" max="10" step="0.1" value="${(+v).toFixed(1)}"> s</div>`;
+    <span class="opt-label">Phrase gap</span><input class="field num" id="pauseInp" type="number" min="0.2" max="10" step="0.1" value="${(+v).toFixed(1)}"> s</div>`;
 }
 function bindPause() {
   const inp = $('#pauseInp'); if (!inp) return;
@@ -359,7 +412,7 @@ function bindPause() {
     st.settings.pause = v;
     try {
       const r = await api('POST', '/api/record/pause', { seconds: v });
-      if (recActive()) toast(`Pause set to ${r.pause.toFixed(1)} s, applies from the next phrase`, 'ok');
+      if (recActive()) toast(`Phrase gap set to ${r.pause.toFixed(1)} s, applies from the next phrase`, 'ok');
     } catch (e) { fail(e); }
   };
 }
@@ -372,7 +425,9 @@ function renderPipeline() {
   const el = $('#pipeStatus');
   if (el) {
     const speaking = pl.speech != null;
-    const l1 = speaking
+    const l1 = st.recorder.muted
+      ? `<span class="a-dot paused"></span><b>Paused</b><span class="pl-sub">microphone muted · session continues</span>`
+      : speaking
       ? `<span class="a-dot speech"></span><b>Speech ${fmtSec(pl.speech)}</b><span class="pl-sub">recording · sent after a ${(pl.pause || 1.5).toFixed(1)} s pause</span>`
       : `<span class="a-dot"></span><b>Listening</b><span class="pl-sub">waiting for speech</span>`;
     let l2, pct = null;
@@ -429,7 +484,7 @@ function drawMeter() {
     ctx.clearRect(0, 0, w, h);
     const bw = w / n;
     const css = getComputedStyle(document.documentElement);
-    const speech = st.pipeline.speech != null;
+    const speech = st.pipeline.speech != null && !st.recorder.muted;
     ctx.fillStyle = speech ? css.getPropertyValue('--ok').trim() : css.getPropertyValue('--faint').trim();
     st.levels.forEach((v, i) => {
       const amp = Math.min(1, Math.sqrt(v) * 4.2);
@@ -448,26 +503,173 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 requestAnimationFrame(drawMeter);
 
+// Speech recognition engines (main.py --engine)
+const ENGINES = {
+  whisper: { name: 'Whisper turbo', short: 'WHISPER' },
+  gigaam: { name: 'GigaAM v3 (RU)', short: 'GIGAAM', ruOnly: true },
+  parakeet: { name: 'Parakeet v3 (RU+EN)', short: 'PARAKEET' },
+};
+const engineBlocksLang = (engine, lang) => !!ENGINES[engine || 'whisper']?.ruOnly && lang === 'en';
+
 async function startRecording() {
+  if (st.starting) return;
   const s = st.settings;
+  st.starting = true;
+  renderControl();
   try {
-    const check = await api('GET', '/api/check-recorder');
+    const engine = s.engine || 'whisper';
+    if (engineBlocksLang(engine, s.lang)) s.lang = 'ru';
+    const check = await api('GET', `/api/check-recorder?engine=${encodeURIComponent(engine)}`);
     if (!check.ok) {
+      st.starting = false; renderControl();
       openSettings();
       toast(`The recognizer's Python can't load its models: ${check.error}`, 'error', 9000);
       return;
     }
     await api('POST', '/api/record/start', {
-      project: st.project, lang: s.lang || 'auto', speakers: s.speakers || 'auto',
-      minutes: s.minutes || 180, pause: s.pause || 1.5, save_audio: !!s.save_audio,
+      project: st.project, engine, lang: s.lang || 'auto', speakers: s.speakers || 'auto',
+      minutes: s.minutes || 180, pause: s.pause || 1.5, save_audio: !!s.save_audio, auto_frames: !!s.auto_frames,
+      continue_sid: st.sid && st.session && !st.session.live ? st.sid : '',
     });
-  } catch (e) { fail(e); }
+  } catch (e) { st.starting = false; renderControl(); fail(e); }
 }
-async function stopRecording() { try { await api('POST', '/api/record/stop'); } catch (e) { fail(e); } }
+async function stopRecording() {
+  if (st.recorder.state !== 'listening') return;
+  st.recorder = { ...st.recorder, state: 'stopping', detail: 'Stopping' };
+  renderControl();
+  try { await api('POST', '/api/record/stop'); } catch (e) { fail(e); }
+}
+async function toggleMute() {
+  const muted = !st.recorder.muted;
+  const btn = $('#muteBtn'); if (btn) btn.disabled = true;
+  try { await api('POST', '/api/record/mute', { muted }); }
+  catch (e) { fail(e); if (btn) btn.disabled = false; }
+}
+async function toggleAutoFrames() {
+  const on = !st.recorder.auto_frames;
+  const btn = $('#autoBtn'); if (btn) btn.disabled = true;
+  try { await api('POST', '/api/record/auto', { on }); st.settings.auto_frames = on; }
+  catch (e) { fail(e); if (btn) btn.disabled = false; }
+}
 async function snap() { try { await api('POST', '/api/record/snap'); } catch (e) { fail(e); } }
 $('#snapSideBtn').onclick = snap;
 
 // ── Transcript ─────────────────────────────────────────────────────────────
+// ── Visibility: hidden lines / screenshots / frames are kept but left out of Beautify ──
+const VIS_FIELD = { line: 'lines', shot: 'shots', frame: 'frames' };
+const isHidden = (kind, key) => st.vis[VIS_FIELD[kind]].has(kind === 'frame' ? +key : String(key));
+function applyVis(v) {
+  v = v || {};
+  st.vis = { lines: new Set(v.lines || []), shots: new Set(v.shots || []), frames: new Set((v.frames || []).map(Number)) };
+}
+const EYE_TITLE = {
+  line: ['Hide this line: it stays here, faded, but Beautify leaves it out', 'Show this line again'],
+  shot: ['Hide this screenshot: Beautify leaves it out', 'Use this screenshot again'],
+  frame: ['Hide this frame: Beautify leaves it out', 'Use this frame again'],
+};
+const SIM_TITLE = {
+  line: 'Hide this line and the ones like it (same or nearly the same words)',
+  shot: 'Hide this picture and every one that looks like it (screenshots and frames)',
+  frame: 'Hide this frame and every picture that looks like it (frames and screenshots)',
+};
+const simBtn = (kind, key) => `<button class="sim-btn" data-sim="${kind}" data-key="${esc(key)}" title="${esc(SIM_TITLE[kind])}">${ICON.similar}</button>`;
+const tools = (kind, key) => `<span class="row-tools">${simBtn(kind, key)}${eyeBtn(kind, key)}</span>`;
+
+// "Such and similar" for lines: same words after normalising, or (longer lines) mostly the
+// same character trigrams — repeated phrases, recognizer hallucinations, filler like "угу".
+const normText = t => (t || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+function trigrams(s) { const g = new Set(), x = ` ${s} `; for (let i = 0; i < x.length - 2; i++) g.add(x.slice(i, i + 3)); return g; }
+function textSimilar(a, b, ga) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const wa = a.split(' '), wb = b.split(' ');
+  if (wa.length <= 3 || wb.length <= 3) {
+    const A = new Set(wa), B = new Set(wb);
+    return A.size === B.size && [...A].every(w => B.has(w));
+  }
+  if (Math.min(a.length, b.length) / Math.max(a.length, b.length) < 0.6) return false;
+  const gb = trigrams(b); let inter = 0;
+  ga.forEach(g => { if (gb.has(g)) inter++; });
+  return inter / (ga.size + gb.size - inter) >= 0.6;
+}
+
+async function hideSimilar(kind, key) {
+  if (!st.project || !st.sid) return;
+  try {
+    let undo, n;
+    if (kind === 'line') {
+      const target = (st.session.entries || []).find(e => e.key === key);
+      if (!target) return;
+      const a = normText(target.text), ga = trigrams(a);
+      const keys = [...new Set(st.session.entries.filter(e => (e.kind === 'speech' || e.kind === 'selection') && e.key
+        && e.kind === target.kind && textSimilar(a, normText(e.text), ga)).map(e => e.key))];
+      const fresh = keys.filter(k => !st.vis.lines.has(k));
+      fresh.forEach(k => st.vis.lines.add(k)); refreshVisDom();
+      applyVis(await api('POST', sessUrl() + '/visibility', { kind: 'line', keys, hidden: true }));
+      n = fresh.length;
+      undo = async () => { applyVis(await api('POST', sessUrl() + '/visibility', { kind: 'line', keys: fresh, hidden: false })); refreshVisDom(); };
+      toast(n > 1 ? `Hid ${n} similar lines` : n ? 'Hid this line (no similar ones)' : 'Already hidden', 'ok', 10000, n ? { label: 'Undo', fn: undo } : null);
+    } else {
+      toast('Looking for similar pictures…', 'info', 2500);
+      const r = await api('POST', sessUrl() + '/hide-similar', { kind, key });
+      applyVis(r.visibility);
+      const fr = r.hidden.frame || [], sh = r.hidden.shot || [];
+      n = fr.length + sh.length;
+      undo = async () => {
+        if (fr.length) applyVis(await api('POST', sessUrl() + '/visibility', { kind: 'frame', keys: fr, hidden: false }));
+        if (sh.length) applyVis(await api('POST', sessUrl() + '/visibility', { kind: 'shot', keys: sh, hidden: false }));
+        refreshVisDom();
+      };
+      const parts = [fr.length ? `${fr.length} frame${fr.length > 1 ? 's' : ''}` : '', sh.length ? `${sh.length} screenshot${sh.length > 1 ? 's' : ''}` : ''].filter(Boolean);
+      toast(n ? `Hid ${parts.join(' and ')} that look alike` : 'Already hidden', 'ok', 10000, n ? { label: 'Undo', fn: undo } : null);
+    }
+    refreshVisDom();
+  } catch (e) { fail(e); }
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('.sim-btn');
+  if (!b) return;
+  e.stopPropagation(); e.preventDefault();
+  hideSimilar(b.dataset.sim, b.dataset.key);
+}, true);
+
+function eyeBtn(kind, key) {
+  const h = isHidden(kind, key);
+  return `<button class="eye-btn" data-eye="${kind}" data-key="${esc(key)}" title="${esc(EYE_TITLE[kind][h ? 1 : 0])}">${h ? ICON.eyeOff : ICON.eye}</button>`;
+}
+const visAttr = (kind, key) => `data-vis="${kind}:${esc(key)}"`;
+const hidCls = (kind, key) => (isHidden(kind, key) ? ' is-hidden' : '');
+
+function refreshVisDom() {
+  $$('[data-vis]').forEach(el => {
+    const i = el.dataset.vis.indexOf(':');
+    const kind = el.dataset.vis.slice(0, i), k = el.dataset.vis.slice(i + 1);
+    const h = isHidden(kind, k);
+    el.classList.toggle('is-hidden', h);
+    $$('.eye-btn', el).forEach(b => {
+      if (b.dataset.eye !== kind || b.dataset.key !== k) return;
+      b.innerHTML = h ? ICON.eyeOff : ICON.eye; b.title = EYE_TITLE[kind][h ? 1 : 0];
+    });
+  });
+  renderFramesBar();
+}
+
+async function toggleHidden(kind, key) {
+  if (!st.project || !st.sid) return;
+  const field = VIS_FIELD[kind], k = kind === 'frame' ? +key : String(key);
+  const hidden = !st.vis[field].has(k);
+  if (hidden) st.vis[field].add(k); else st.vis[field].delete(k);
+  refreshVisDom();
+  try { applyVis(await api('POST', sessUrl() + '/visibility', { kind, key: k, hidden })); refreshVisDom(); }
+  catch (e) { fail(e); if (hidden) st.vis[field].delete(k); else st.vis[field].add(k); refreshVisDom(); }
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('.eye-btn');
+  if (!b) return;
+  e.stopPropagation(); e.preventDefault();
+  toggleHidden(b.dataset.eye, b.dataset.key);
+}, true);
+
 function entryHtml(e, prev, isNew) {
   if (e.deleted) return '';
   const nw = isNew ? ' new' : '';
@@ -475,15 +677,23 @@ function entryHtml(e, prev, isNew) {
     const name = (e.path || '').split('/').pop();
     const shot = (st.session.screenshots || []).find(s => s.path === e.path);
     const url = shot && shot.url ? shot.url : null;
-    return `<div class="row shot-row${nw}" data-time="${esc(e.time)}"><span class="t">${esc(e.time)}</span><div class="body">
-      <div class="shot-inline" data-path="${esc(e.path)}">${url ? `<img src="${esc(url)}" alt="">` : ''}<span class="lbl"><b>Screenshot captured</b>${esc(name)}</span></div></div></div>`;
+    return `<div class="row shot-row${nw}${hidCls('shot', name)}" data-time="${esc(e.time)}" ${visAttr('shot', name)}><span class="t">${esc(e.time)}</span><div class="body">
+      <div class="shot-inline" data-path="${esc(e.path)}">${url ? `<img src="${esc(url)}" alt="">` : ''}<span class="lbl"><b>Screenshot</b>${esc(name)}</span></div></div>${tools('shot', name)}</div>`;
   }
+  const k = e.key || '';
   if (e.kind === 'selection') {
-    return `<div class="row${nw}" data-time="${esc(e.time)}"><span class="t">${esc(e.time)}</span><div class="body"><div class="sel-quote"><span class="k">Selected text</span>${esc(e.text)}</div></div></div>`;
+    return `<div class="row${nw}${hidCls('line', k)}" data-time="${esc(e.time)}" ${visAttr('line', k)}><span class="t">${esc(e.time)}</span><div class="body"><div class="sel-quote"><span class="k">Selected text</span>${esc(e.text)}</div></div>${k ? tools('line', k) : ''}</div>`;
   }
   const cont = e.speaker != null && prev && prev.kind === 'speech' && prev.speaker === e.speaker;
   const spk = e.speaker != null ? `<div class="spk" style="--sc:${speakerColor(e.speaker)}">Speaker ${e.speaker}</div>` : '';
-  return `<div class="row${e.speaker != null ? ' has-spk' : ''}${cont ? ' cont' : ''}${nw}" data-time="${esc(e.time)}"><span class="t">${esc(e.time)}</span><div class="body">${spk}<p>${esc(e.text)}</p></div></div>`;
+  return `<div class="row${e.speaker != null ? ' has-spk' : ''}${cont ? ' cont' : ''}${nw}${hidCls('line', k)}" data-time="${esc(e.time)}" ${visAttr('line', k)}><span class="t">${esc(e.time)}</span><div class="body">${spk}<p>${esc(e.text)}</p></div>${k ? tools('line', k) : ''}</div>`;
+}
+
+// An auto frame shown in the transcript at the moment it appeared on screen.
+function frameRowHtml(g, isNew) {
+  const s = g.scene, url = s.last_url || s.url, t = hms(s.wall_start);
+  return `<div class="row shot-row frame-row${isNew ? ' new' : ''}${hidCls('frame', s.id)}" data-time="${esc(t)}" data-fid="${s.id}" ${visAttr('frame', s.id)}><span class="t">${esc(t)}</span><div class="body">
+    <div class="shot-inline frame-inline" data-fid="${s.id}">${url ? `<img src="${esc(url)}" alt="">` : ''}<span class="lbl"><b>Auto frame #${s.id}</b>on screen ${fmtSceneDur(g.duration)}${g.shows > 1 ? ` · shown ${g.shows}×` : ''}${s.cls ? ` · ${esc(s.cls)}` : ''}</span></div></div>${tools('frame', s.id)}</div>`;
 }
 
 function renderTranscript() {
@@ -496,8 +706,11 @@ function renderTranscript() {
     return;
   }
   // Display in time order: markers are written when flushed, which can be after a phrase that started earlier.
-  const sorted = entries.map((e, i) => [e, i]).sort((a, b) => (a[0].time < b[0].time ? -1 : a[0].time > b[0].time ? 1 : a[1] - b[1])).map(x => x[0]);
-  box.innerHTML = sorted.map((e, i) => entryHtml(e, sorted[i - 1], false)).join('') + '<div id="pipeline"></div><div id="ghost"></div>';
+  const items = entries.map((e, i) => ({ t: e.time, i, e }))
+    .concat(frameGroups().map((g, j) => ({ t: hms(g.scene.wall_start), i: -1, g })));
+  items.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : a.i - b.i));
+  box.innerHTML = items.map((x, i) => x.g ? frameRowHtml(x.g, false) : entryHtml(x.e, items[i - 1] && items[i - 1].e, false)).join('')
+    + '<div id="pipeline"></div><div id="ghost"></div>';
   renderChunks();
   renderGhost();
   if (st.follow) box.scrollTop = box.scrollHeight;
@@ -505,7 +718,7 @@ function renderTranscript() {
 
 function emptyTranscript() {
   if (!st.project) return `<div class="empty"><div class="art">${ICON.mic}</div><h3>Create a project to begin</h3><p>Projects keep transcripts, screenshots and documents together.</p></div>`;
-  return `<div class="empty"><div class="art">${ICON.mic}</div><h3>Ready when you are</h3>
+  return `<div class="empty"><div class="art">${ICON.mic}</div><h3>${st.sid ? 'Ready when you are' : 'New session'}</h3>
     <p>Choose what screenshots should capture (top right), then press <b>Start recording</b>. Speech appears here as it is recognized; press <kbd>⌃</kbd><kbd>⇧</kbd><kbd>S</kbd> or <b>Snap</b> to capture the screen.</p></div>`;
 }
 
@@ -528,10 +741,23 @@ function appendEntry(idx, entry) {
 
 function renderGhost() {
   const g = $('#ghost'); if (!g) return;
+  const r = st.recorder;
+  if (!isLive() || !r.active) { g.innerHTML = ''; return; }
   const sp = st.pipeline.speech;
-  if (!isLive() || st.recorder.state !== 'listening' || sp == null) { g.innerHTML = ''; return; }
-  g.innerHTML = `<div class="row ghost-row"><span class="t">now</span><div class="body"><p><span class="wave"><i></i><i></i><i></i><i></i></span>
-    <span>Speaking · ${fmtSec(sp)}</span><span class="pl-sub">goes to transcription after a ${(st.pipeline.pause || 1.5).toFixed(1)} s pause</span></p></div></div>`;
+  let inner;
+  if (r.state === 'stopping' || r.state === 'finalizing') {
+    inner = `<span class="spinner tiny"></span><span>Finishing…</span><span class="pl-sub">${esc(r.detail || 'transcribing the remaining speech')}</span>`;
+  } else if (r.state !== 'listening') {
+    inner = `<span class="spinner tiny"></span><span>Starting…</span><span class="pl-sub">${esc(r.detail || 'loading models')}</span>`;
+  } else if (r.muted) {
+    inner = `<span class="a-dot paused"></span><span>Paused</span><span class="pl-sub">microphone is muted · press Resume to continue</span>`;
+  } else if (sp != null) {
+    inner = `<span class="wave"><i></i><i></i><i></i><i></i></span><span>Speaking · ${fmtSec(sp)}</span>
+      <span class="pl-sub">goes to transcription after a ${(st.pipeline.pause || 1.5).toFixed(1)} s pause</span>`;
+  } else {
+    inner = `<span class="listen-dot"></span><span class="shimmer">Listening…</span><span class="pl-sub">waiting for speech</span>`;
+  }
+  g.innerHTML = `<div class="row ghost-row"><span class="t">now</span><div class="body"><p>${inner}</p></div></div>`;
   if (st.follow) { const box = $('#transcript'); box.scrollTop = box.scrollHeight; }
 }
 
@@ -542,6 +768,8 @@ $('#transcript').addEventListener('scroll', () => {
 });
 $('#jumpLive').onclick = () => { st.follow = true; const b = $('#transcript'); b.scrollTop = b.scrollHeight; $('#jumpLive').classList.add('hidden'); };
 $('#transcript').addEventListener('click', e => {
+  const fi = e.target.closest('.frame-inline');
+  if (fi) { openFrameLightbox(+fi.dataset.fid); return; }
   const si = e.target.closest('.shot-inline');
   if (si) openLightbox(si.dataset.path);
 });
@@ -572,8 +800,8 @@ function shotStages(s) {
 }
 function shotCardHtml(s, enter) {
   const url = s.url ? `${s.url}` : '';
-  return `<div class="shot-card${enter ? ' enter' : ''}" data-path="${esc(s.path)}">
-    <button class="shot-del" data-del="${esc(s.path)}" title="Delete screenshot">${ICON.trash}</button>
+  return `<div class="shot-card${enter ? ' enter' : ''}${hidCls('shot', s.name)}" data-path="${esc(s.path)}" data-time="${esc(s.time)}" ${visAttr('shot', s.name)}>
+    <div class="card-tools">${simBtn('shot', s.name)}${eyeBtn('shot', s.name)}<button class="shot-del" data-del="${esc(s.path)}" title="Delete screenshot">${ICON.trash}</button></div>
     <div class="thumb" data-path="${esc(s.path)}">${url ? `<img src="${esc(url)}" loading="lazy" alt="">` : ''}</div>
     <div class="shot-meta"><div class="top"><span class="time">${esc(s.time)}</span><span class="name">${esc(s.name)}</span></div>
     <ol class="pipeline">${shotStages(s).map(([l, c]) => `<li class="${c}" title="${esc(l)}">${esc(l)}</li>`).join('')}</ol></div></div>`;
@@ -614,7 +842,8 @@ function upsertShot(shot, isNew) {
 $('#shots').addEventListener('click', e => {
   const del = e.target.closest('.shot-del');
   if (del) { confirmDeleteShot(del.closest('.shot-card'), del.dataset.del); return; }
-  const t = e.target.closest('.thumb'); if (t) openLightbox(t.dataset.path);
+  const t = e.target.closest('.thumb'); if (t) { openLightbox(t.dataset.path); return; }
+  const card = e.target.closest('.shot-card'); if (card && card.dataset.time) jumpToTime(card.dataset.time);
 });
 
 function confirmDeleteShot(card, path) {
@@ -672,6 +901,168 @@ async function openLightbox(path) {
 }
 function closeLightbox() { $('#lightbox').classList.add('hidden'); }
 
+// ── Auto frames ────────────────────────────────────────────────────────────
+// Scenes come from autoframes.py (live: 'frame' events; saved: frames/<sid>/scenes.json).
+// A revisit (same_as) is the same image shown again: counted on its original card.
+const hms = iso => (iso || '').slice(11, 19);
+const secs = (a, b) => Math.max(0, (new Date(b) - new Date(a)) / 1000);
+const fmtSceneDur = s => s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`;
+
+// Frames belong to one session: cleared whenever the project or session changes.
+function resetFrames() { st.frames = { scenes: [], selection: null, stats: null, busy: false }; }
+
+async function loadFrames() {
+  if (!st.project || !st.sid) { resetFrames(); renderFrames(); return; }
+  const project = st.project;
+  const sid = st.sid;
+  try {
+    const d = await api('GET', sessUrl() + '/frames');
+    if (sid !== st.sid || project !== st.project) return;   // switched meanwhile
+    st.frames.scenes = d.scenes; st.frames.selection = d.selection;
+  } catch (_) { st.frames.scenes = []; st.frames.selection = null; }
+  st.frames.stats = isLive() ? st.recorder.frame_stats || null : null;
+  renderFrames();
+  if (st.frames.scenes.length) renderTranscript();   // frames sit in the transcript at their time
+}
+
+function upsertFrame(scene) {
+  const list = st.frames.scenes;
+  const i = list.findIndex(s => s.id === scene.id);
+  if (i >= 0) list[i] = { ...list[i], ...scene }; else list.push(scene);
+  renderFrames();
+  syncFrameRow(scene.same_as || scene.id, i < 0 && !scene.same_as);
+}
+
+// Keep the transcript's inline row for a frame in step (new / updated / shown again).
+function syncFrameRow(id, isNew) {
+  const box = $('#transcript');
+  if (!box || box.querySelector('.empty')) return;
+  const g = frameGroups().find(x => x.scene.id === id); if (!g) return;
+  const tmp = document.createElement('div'); tmp.innerHTML = frameRowHtml(g, isNew);
+  const row = tmp.firstElementChild;
+  const old = box.querySelector(`.row[data-fid="${id}"]`);
+  if (old) { old.replaceWith(row); return; }
+  const later = $$('#transcript .row[data-time]').find(r => r.dataset.time > row.dataset.time);
+  box.insertBefore(row, later || $('#pipeline'));
+  if (st.follow) box.scrollTop = box.scrollHeight;
+}
+
+function jumpToFrame(id) {
+  switchTab('live');
+  const row = $(`#transcript .row[data-fid="${id}"]`);
+  if (!row) return;
+  st.follow = false;
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  row.classList.add('flash');
+  setTimeout(() => row.classList.remove('flash'), 1400);
+}
+
+function frameGroups() {
+  const byId = new Map();
+  for (const s of st.frames.scenes) {
+    if (s.same_as) continue;
+    byId.set(s.id, { scene: s, shows: 1, duration: secs(s.wall_start, s.wall_end) });
+  }
+  for (const s of st.frames.scenes) {
+    const g = s.same_as && byId.get(s.same_as);
+    if (g) { g.shows++; g.duration += secs(s.wall_start, s.wall_end); }
+  }
+  return [...byId.values()];
+}
+
+function renderFramesBar() {
+  const bar = $('#framesBar');
+  const live = isLive();
+  const stats = st.frames.stats;
+  const groups = frameGroups();
+  const n = groups.length;
+  const used = groups.filter(g => !isHidden('frame', g.scene.id)).length;
+  let html = '';
+  if (live) {
+    const on = st.recorder.auto_frames;
+    html = `<div class="fb-stats">${on ? '<span class="auto-dot live"></span>' : ''}${stats
+      ? `<b>${stats.frames}</b> frames → <b>${stats.scenes}</b> scenes${stats.revisits ? ` · ${stats.revisits} repeats` : ''}${stats.l1 && stats.l1.faces ? ` · ${stats.l1.faces} faces skipped` : ''}${stats.l1 && !stats.l1.ready ? ' · smart filter loading' : ''} · <span class="fb-state">${esc(stats.state)}</span>`
+      : on ? 'Watching the screen…' : 'Auto frames are off'}</div>
+      ${st.recorder.state === 'listening' ? `<button class="ghost-btn small" id="fbAuto">${on ? 'Stop' : 'Start'} auto frames</button>` : ''}`;
+  } else if (n) {
+    const lastN = (st.frames.selection && st.frames.selection.n) || 10;
+    html = `<div class="fb-stats" title="Visible frames go to Beautify as screenshots, at their place in the transcript"><b>${used}</b> of ${n} frames go to Beautify</div>
+      <div class="fb-actions"><label class="fb-n">Best <input class="field num" id="fbN" type="number" min="1" max="100" value="${lastN}"></label>
+      <button class="ghost-btn small" id="fbPick" ${st.frames.busy ? 'disabled' : ''} title="Keep the N frames with the most said about them (pointing phrases, time on screen) and hide the rest. The eye brings any frame back.">${ICON.sparkle}Pick</button></div>`;
+  }
+  bar.innerHTML = html;
+  bar.classList.toggle('hidden', !html);
+  const a = $('#fbAuto'); if (a) a.onclick = toggleAutoFrames;
+  const p = $('#fbPick'); if (p) p.onclick = pickFrames;
+}
+
+function frameCardHtml(g) {
+  const s = g.scene;
+  const url = s.last_url || s.url;
+  const tags = [];
+  if (g.shows > 1) tags.push(`<span class="ftag" title="Shown ${g.shows} times">×${g.shows}</span>`);
+  if (s.last_path) tags.push('<span class="ftag" title="Changed while on screen; the card shows the last state">updated</span>');
+  if (s.scroll_of) tags.push(`<span class="ftag" title="Looks like a scrolled #${s.scroll_of}">scroll</span>`);
+  if (s.cls) tags.push(`<span class="ftag" title="Level 1 (CLIP) guess, ${Math.round((s.cls_score || 0) * 100)}%">${esc(s.cls)}</span>`);
+  if (s.features && s.features.deixis) tags.push(`<span class="ftag hot" title="${esc((s.deixis || []).join(' · '))}">“${s.features.deixis} pointer${s.features.deixis > 1 ? 's' : ''}”</span>`);
+  return `<div class="frame-card${s.selected ? ' picked' : ''}${hidCls('frame', s.id)}" data-id="${s.id}" ${visAttr('frame', s.id)} title="Show in the transcript">
+    <div class="card-tools">${simBtn('frame', s.id)}${eyeBtn('frame', s.id)}</div>
+    <div class="thumb" data-fid="${s.id}" title="Open">${url ? `<img src="${esc(url)}" loading="lazy" alt="">` : ''}${s.selected ? '<span class="pick-star" title="Picked">★</span>' : ''}</div>
+    <div class="shot-meta"><div class="top"><span class="time">${esc(hms(s.wall_start))}</span><span class="name">#${s.id} · ${fmtSceneDur(g.duration)}${s.score != null ? ` · score ${s.score.toFixed(1)}` : ''}</span></div>
+    <div class="ftags">${tags.join('')}</div></div></div>`;
+}
+
+function renderFrames() {
+  const groups = frameGroups();
+  $('#frameCount').textContent = groups.length || '';
+  renderFramesBar();
+  const box = $('#frames');
+  if (!groups.length) {
+    box.innerHTML = `<div class="empty"><div class="art">${ICON.camera}</div><h3>No auto frames</h3><p>Turn on <b>Auto frames</b> before or during a recording. The screen is captured every second; only frames that show something new and stay still are kept, talking heads and transitions are skipped.</p></div>`;
+    return;
+  }
+  if (isLive()) groups.reverse();
+  box.innerHTML = groups.map(frameCardHtml).join('');
+}
+
+async function pickFrames() {
+  const n = +($('#fbN') && $('#fbN').value) || 10;
+  st.frames.busy = true; renderFramesBar();
+  try {
+    const d = await api('POST', sessUrl() + '/frames/select', { n });
+    st.frames.scenes = d.scenes; st.frames.selection = d.selection;
+    st.vis.frames = new Set(d.scenes.filter(s => s.hidden && !s.same_as).map(s => s.id));
+  } catch (e) { fail(e); }
+  st.frames.busy = false; renderFrames(); refreshVisDom();
+}
+
+$('#frames').addEventListener('click', e => {
+  const t = e.target.closest('.thumb[data-fid]'); if (t) { openFrameLightbox(+t.dataset.fid); return; }
+  const card = e.target.closest('.frame-card'); if (card) jumpToFrame(+card.dataset.id);
+});
+
+function openFrameLightbox(id) {
+  const s = st.frames.scenes.find(x => x.id === id); if (!s) return;
+  const lb = $('#lightbox');
+  const f = s.features;
+  const info = [
+    `Shown ${hms(s.wall_start)}–${hms(s.wall_end)}`,
+    s.changed != null ? `${Math.round(s.changed * 100)}% different from the previous scene` : '',
+    s.mask_frac ? `${Math.round(s.mask_frac * 100)}% masked as moving (webcam)` : '',
+    f ? `${f.words} words spoken · ${f.deixis} pointing phrase${f.deixis === 1 ? '' : 's'}${s.deixis && s.deixis.length ? ': ' + s.deixis.join(' · ') : ''}` : '',
+    s.caption || '', s.ocr ? 'OCR:\n' + s.ocr : '',
+  ].filter(Boolean).join('\n');
+  const urls = [s.url, s.last_url].filter(Boolean);
+  lb.innerHTML = `<div class="lb-img${urls.length > 1 ? ' two' : ''}">${urls.map(u => `<img src="${esc(u)}" alt="">`).join('')}</div>
+    <div class="lb-side"><div class="lb-head"><div><b>${esc(hms(s.wall_start))}</b> <span style="color:#6b7480;font-size:12px">frame #${s.id}${s.last_url ? ' · first and last state' : ''}</span></div>
+    <div style="display:flex;gap:6px"><button class="ghost-btn small" id="lbJump">Find in transcript</button><button class="ghost-btn small" id="lbClose">Close</button></div></div>
+    <div class="lb-ocr">${esc(info)}</div></div>`;
+  lb.classList.remove('hidden');
+  $('#lbClose').onclick = closeLightbox;
+  $('#lbJump').onclick = () => { closeLightbox(); jumpToTime(hms(s.wall_start)); };
+  lb.onclick = e => { if (e.target === lb || e.target.classList.contains('lb-img')) closeLightbox(); };
+}
+
 // ── Beautify ───────────────────────────────────────────────────────────────
 const currentJob = () => (st.project && st.sid) ? st.jobs[key(st.project, st.sid)] : null;
 function versions() { return (st.session && st.session.manifest && st.session.manifest.versions) || []; }
@@ -680,7 +1071,7 @@ function lastAttempt() { const v = versions(); return v[v.length - 1] || null; }
 
 function renderBeautify() {
   const el = $('#beautifyCtl');
-  if (!st.session) { el.innerHTML = ''; return; }
+  if (!st.session) { el.innerHTML = ''; $('#versionBadge').textContent = ''; return; }
   const job = currentJob();
   const latest = latestVersion();
   const last = lastAttempt();
@@ -726,6 +1117,25 @@ function openBeautifyMenu(anchor) {
     closeMenus(); runBeautify(b.dataset.mode);
   };
   openMenu(m, anchor, 'right');
+}
+
+// After a recording: ask before starting the (long) final Beautify run.
+function offerBeautify(project, sid) {
+  if (st.jobs[key(project, sid)] && st.jobs[key(project, sid)].status === 'running') return;
+  openModal(`<div class="modal-head"><h2>Recording finished</h2><p>Build the final beautified version of <b>${esc(sidLabel(sid))}</b> now?
+    Hidden lines, screenshots and frames are left out. You can always start it later with <b>Beautify</b>.</p></div>
+    <div class="modal-foot"><button class="ghost-btn" data-close>Not now</button><button class="primary-btn" id="offerGo">${ICON.sparkle}Build final version</button></div>`,
+  root => {
+    $('[data-close]', root).onclick = closeModal;
+    $('#offerGo', root).onclick = async () => {
+      closeModal();
+      try {
+        const job = await api('POST', sessUrl(project, sid) + '/beautify', { mode: 'final' });
+        st.jobs[key(job.project, job.sid)] = job;
+        renderBeautify(); renderDoc(); renderShots();
+      } catch (e) { fail(e); }
+    };
+  });
 }
 
 async function runBeautify(mode) {
@@ -925,9 +1335,18 @@ function renderCapturePop(waiting) {
       <button class="mode ${cfg.mode === 'window' ? 'on' : ''}" data-m="window">${ICON.window}Window<small>click a window</small></button>
     </div>
     ${waiting ? `<div class="waiting"><span class="spinner"></span>${waiting}</div>` : ''}
-    <div class="preview">${st.capture && st.capture.preview ? `<img src="${esc(st.capture.preview)}" alt="Capture preview">` : '<span class="state-sub">No preview yet</span>'}<span class="pv-label">${esc(label)}</span></div>
+    <div class="preview" id="pvBox">${st.capture && st.capture.preview
+      ? `<div class="pv-stage" id="pvStage"><img id="pvImg" src="${esc(st.capture.preview)}" alt="Capture preview">${cfg.frames_crop ? cropBoxHtml(cfg.frames_crop) : ''}</div>`
+      : '<span class="state-sub">No preview yet</span>'}<span class="pv-label">${esc(label)}</span></div>
     <div class="pop-row"><button class="ghost-btn small" id="winListBtn">Choose from window list</button><button class="ghost-btn small" id="pvRefresh">Refresh preview</button></div>
+    <div class="crop-row">${cfg.frames_crop
+      ? `<span><b>Auto frames:</b> the framed part only <span class="state-sub" id="cropInfo">(${cropInfo(cfg)}) · drag to move, edges to resize</span></span><span class="crop-btns"><button class="ghost-btn small" id="detectBtn">Detect again</button><button class="ghost-btn small" id="cropReset">Use whole area</button></span>`
+      : `<span class="state-sub">Auto frames use the whole area. If the video is only part of it (a browser or call window), detect it so slide changes aren't drowned out by the page.</span><span class="crop-btns"><button class="ghost-btn small" id="cropHand">Set by hand</button><button class="ghost-btn small" id="detectBtn">Detect video</button></span>`}</div>
     <div class="win-list hidden" id="winList"></div>`;
+  $('#detectBtn').onclick = detectVideo;
+  const cr = $('#cropReset'); if (cr) cr.onclick = () => saveCrop(null);
+  const ch = $('#cropHand'); if (ch) ch.onclick = () => saveCrop({ x: 0.15, y: 0.15, w: 0.7, h: 0.7 });
+  bindCropEditor();
   $$('.mode', pop).forEach(b => b.onclick = () => chooseCapture(b.dataset.m));
   $('#pvRefresh').onclick = async () => { try { st.capture = await api('POST', '/api/capture/preview'); renderCapturePop(); } catch (e) { fail(e); } };
   $('#winListBtn').onclick = async () => {
@@ -943,6 +1362,81 @@ function renderCapturePop(waiting) {
       });
     } catch (e) { fail(e); }
   };
+}
+// ── Auto-frames crop editor (on the capture preview) ───────────────────────
+const cropInfo = cfg => `${Math.round(cfg.frames_crop.w * 100)}% × ${Math.round(cfg.frames_crop.h * 100)}%${cfg.frames_crop_method ? ', ' + esc(cfg.frames_crop_method) : ''}`;
+const CROP_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+function cropBoxHtml(c) {
+  return `<div class="crop-box" id="cropBox" style="left:${c.x * 100}%;top:${c.y * 100}%;width:${c.w * 100}%;height:${c.h * 100}%" title="Drag to move · drag an edge or corner to resize">
+    ${CROP_HANDLES.map(h => `<span class="ch ch-${h}" data-h="${h}"></span>`).join('')}</div>`;
+}
+
+async function saveCrop(crop) {
+  try {
+    st.capture = await api('POST', '/api/capture/crop', crop ? { crop } : {});
+    if (crop && crop.w === 0.7 && crop.h === 0.7) toast('Drag the frame onto the video', 'ok');
+  } catch (e) { fail(e); }
+  renderCapturePop();
+}
+
+// Size the stage to the image as displayed (object-fit: contain), so the crop's percentages
+// line up with the picture; then let the frame be dragged and resized.
+function bindCropEditor() {
+  const img = $('#pvImg'), stage = $('#pvStage'), box = $('#pvBox');
+  if (!img || !stage) return;
+  const fit = () => {
+    if (!img.naturalWidth) return;
+    const s = Math.min(box.clientWidth / img.naturalWidth, box.clientHeight / img.naturalHeight);
+    stage.style.width = `${img.naturalWidth * s}px`;
+    stage.style.height = `${img.naturalHeight * s}px`;
+  };
+  if (img.complete) fit(); else img.onload = fit;
+  const cb = $('#cropBox'); if (!cb) return;
+  cb.addEventListener('pointerdown', e => {
+    e.preventDefault(); e.stopPropagation();
+    const mode = e.target.dataset.h || 'move';
+    const r = stage.getBoundingClientRect();
+    const start = { ...st.capture.config.frames_crop };
+    const px = e.clientX, py = e.clientY;
+    cb.setPointerCapture(e.pointerId);
+    cb.classList.add('dragging');
+    let cur = start;
+    const MIN = 0.05;
+    const move = ev => {
+      const dx = (ev.clientX - px) / r.width, dy = (ev.clientY - py) / r.height;
+      let { x, y, w, h } = start;
+      if (mode === 'move') {
+        x = Math.min(Math.max(0, x + dx), 1 - w); y = Math.min(Math.max(0, y + dy), 1 - h);
+      } else {
+        if (mode.includes('w')) { const nx = Math.min(Math.max(0, x + dx), x + w - MIN); w += x - nx; x = nx; }
+        if (mode.includes('e')) w = Math.min(Math.max(MIN, w + dx), 1 - x);
+        if (mode.includes('n')) { const ny = Math.min(Math.max(0, y + dy), y + h - MIN); h += y - ny; y = ny; }
+        if (mode.includes('s')) h = Math.min(Math.max(MIN, h + dy), 1 - y);
+      }
+      cur = { x, y, w, h };
+      Object.assign(cb.style, { left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${h * 100}%` });
+      const info = $('#cropInfo'); if (info) info.textContent = `(${Math.round(w * 100)}% × ${Math.round(h * 100)}%, manual) · drag to move, edges to resize`;
+    };
+    const up = () => {
+      cb.removeEventListener('pointermove', move);
+      cb.removeEventListener('pointerup', up);
+      cb.removeEventListener('pointercancel', up);
+      cb.classList.remove('dragging');
+      if (cur !== start) saveCrop(cur);
+    };
+    cb.addEventListener('pointermove', move);
+    cb.addEventListener('pointerup', up);
+    cb.addEventListener('pointercancel', up);
+  });
+}
+
+async function detectVideo() {
+  renderCapturePop('Watching the capture area for ~6 s · keep the video playing');
+  try {
+    st.capture = await api('POST', '/api/capture/detect-video');
+    toast('Auto frames will keep only the video area', 'ok');
+  } catch (e) { fail(e); }
+  renderCapturePop();
 }
 async function chooseCapture(mode) {
   try {
@@ -989,11 +1483,13 @@ async function openSettings() {
         <div class="frow"><label>Beautify engine</label><select class="field" id="setEngine"><option value="claude" ${s.beautify_engine !== 'api' ? 'selected' : ''}>Claude Code (recommended)</option><option value="api" ${s.beautify_engine === 'api' ? 'selected' : ''}>Gemini / OpenAI API (single pass, no tools)</option></select></div>
         <div class="frow"><label>Beautify model</label><select class="field" id="setBModel">${modelOpts(s.beautify_model)}</select></div>
         <div class="frow"><label>Chat model</label><select class="field" id="setCModel">${modelOpts(s.chat_model)}</select></div>
-        <div class="frow"><label>Final version</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setAuto" ${s.auto_final_beautify ? 'checked' : ''}><span class="knob"></span>Build the final version automatically when recording stops</label></div>
+        <div class="frow"><label>Final version</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setAuto" ${s.auto_final_beautify ? 'checked' : ''}><span class="knob"></span>Offer to build the final version when recording stops</label></div>
       </fieldset>
       <fieldset class="fset"><legend>Recognizer</legend>
         <div class="frow"><label>Python</label><div style="display:flex;gap:8px"><input class="field" id="setPy" value="${esc(s.recorder_python)}" placeholder="Same as the server"><button class="ghost-btn small" id="checkPy" style="height:30px">Check</button></div>
           <div class="help">The interpreter that has faster-whisper, torch and easyocr installed. <span id="checkRes" class="check-res"></span></div></div>
+        <div class="frow"><label>Auto frames</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setL1" ${s.frames_l1 !== false ? 'checked' : ''}><span class="knob"></span>Smart filter (CLIP): drop webcam faces, merge look-alike frames</label>
+          <div class="help">Applies to the next recording. Off = pixel comparison only.</div></div>
       </fieldset>
     </div>
     <div class="modal-foot"><button class="ghost-btn" data-close>Cancel</button><button class="primary-btn" id="saveSettings">Save</button></div>`,
@@ -1001,7 +1497,7 @@ async function openSettings() {
     $('[data-close]', root).onclick = closeModal;
     $('#checkPy', root).onclick = async () => {
       await api('POST', '/api/settings', { recorder_python: $('#setPy').value.trim() });
-      const r = await api('GET', '/api/check-recorder');
+      const r = await api('GET', `/api/check-recorder?engine=${encodeURIComponent(st.settings.engine || 'whisper')}`);
       const el = $('#checkRes'); el.className = 'check-res ' + (r.ok ? 'ok' : 'bad');
       el.textContent = r.ok ? `✓ ${r.python} is ready` : `✗ ${r.error}`;
     };
@@ -1010,6 +1506,7 @@ async function openSettings() {
         st.settings = await api('POST', '/api/settings', {
           beautify_engine: $('#setEngine').value, beautify_model: $('#setBModel').value, chat_model: $('#setCModel').value,
           auto_final_beautify: $('#setAuto').checked, recorder_python: $('#setPy').value.trim(),
+          frames_l1: $('#setL1').checked,
         });
         if (st.project) await api('POST', `/api/projects/${encodeURIComponent(st.project)}/settings`, {
           context_dir: $('#setCtx').value.trim(), style_reference: $('#setStyle').value.trim(),
@@ -1046,6 +1543,7 @@ function switchSide(side) {
   $$('#sideTabs .tab').forEach(b => b.classList.toggle('active', b.dataset.side === side));
   $('#side-shots').classList.toggle('hidden', side !== 'shots');
   $('#side-chat').classList.toggle('hidden', side !== 'chat');
+  $('#side-frames').classList.toggle('hidden', side !== 'frames');
   $('#side-notes').classList.toggle('hidden', side !== 'notes');
   $('#notesState').classList.toggle('hidden', side !== 'notes');
   if (side === 'chat') { $('#chatDot').classList.add('hidden'); renderChat(); setTimeout(() => $('#chatInput').focus(), 0); }
@@ -1069,7 +1567,7 @@ function addLog(line) {
 }
 
 function renderAll() {
-  renderControl(); renderTranscript(); renderShots(); renderBeautify(); renderDoc(); renderChat(); renderSessionMenu();
+  renderControl(); renderTranscript(); renderShots(); renderFrames(); renderBeautify(); renderDoc(); renderChat(); renderSessionMenu();
 }
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -1102,15 +1600,16 @@ async function handle(m) {
       const prev = st.recorder;
       st.recorder = m;
       if (m.pipeline) st.pipeline = m.pipeline;
-      // a new live session got its id → switch to it
-      if (m.active && m.sid && m.sid !== prev.sid) {
+      if (m.active || m.state === 'error') st.starting = false;
+      // a live session got its id (new, or the continued one) → show it live
+      if (m.active && m.sid && (m.sid !== prev.sid || !prev.active || !isLive())) {
         if (st.project !== m.project) { await selectProject(m.project, { keepSession: true }); }
         await loadSessions();
         await selectSession(m.sid);
         switchTab('live');
       }
-      if (m.state === 'listening' && prev.state !== 'listening') renderGhost();
       renderControl();
+      renderGhost();
       if (!m.active && prev.active) { await loadSessions(); }
       break;
     }
@@ -1129,6 +1628,18 @@ async function handle(m) {
       break;
     case 'log':
       addLog(m.line);
+      break;
+    case 'frame':
+      if (m.project === st.project && m.sid === st.sid) upsertFrame(m.scene);
+      break;
+    case 'visibility':
+      if (m.project === st.project && m.sid === st.sid) { applyVis(m.visibility); refreshVisDom(); }
+      break;
+    case 'offer_beautify': offerBeautify(m.project, m.sid); break;
+    case 'frame_stats':
+      st.recorder.frame_stats = m;
+      if (m.project === st.project && m.sid === st.sid) { st.frames.stats = m; renderFramesBar(); }
+      { const b = $('#autoBtn'); if (b && st.recorder.auto_frames) b.lastChild.textContent = `Auto · ${m.scenes}`; }
       break;
     case 'session_changed':
       if (m.project === st.project) {
@@ -1154,6 +1665,9 @@ async function handle(m) {
     case 'notes':
       if (m.project === st.project && m.client !== CLIENT_ID) applyNotes(m.text, true);
       break;
+    case 'external':
+      if (m.project === st.project) { st.external = { files: m.files, speakers: m.speakers }; renderExternal(); }
+      break;
     case 'toast': toast(m.text, m.level || 'info'); break;
   }
 }
@@ -1162,7 +1676,7 @@ async function handle(m) {
 const notesUrl = () => `/api/projects/${encodeURIComponent(st.project)}/notes`;
 let notesTimer = null;
 
-function countCorrections(text) { return (text.match(/^\s*[-*]\s*".+?"\s*(→|->)\s*".+?"/gm) || []).length; }
+function countCorrections(text) { return (text.match(/^\s*[-*]?\s*".+?"\s*(→|->|<--)\s*\S/gm) || []).length; }
 function setNotesState(t, dirty) { const el = $('#notesState'); el.textContent = t; el.classList.toggle('dirty', !!dirty); }
 
 function applyNotes(text, external) {
@@ -1213,6 +1727,85 @@ window.addEventListener('beforeunload', () => {
   if (st.notes.dirty && st.project) navigator.sendBeacon && fetch(notesUrl(), { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: $('#notesArea').value, client: CLIENT_ID }) });
 });
 
+// ── External transcripts (projects/<p>/external/ — e.g. Teams, for speaker names) ─
+const extUrl = () => `/api/projects/${encodeURIComponent(st.project)}/external`;
+
+async function loadExternal() {
+  st.external = { files: [], speakers: [] };
+  renderExternal();
+  if (!st.project) return;
+  try { st.external = await api('GET', extUrl()); } catch (_) { /* keep empty */ }
+  renderExternal();
+}
+
+function renderExternal() {
+  const list = $('#extList');
+  $('#extBox').classList.toggle('hidden', !st.project);
+  const files = st.external.files || [];
+  if (!files.length) {
+    list.innerHTML = `<div class="ext-empty">Drop the Teams transcript of this meeting here (.vtt or .docx). Beautify takes speaker names from it and keeps our spelling of brands and terms.</div>`;
+    return;
+  }
+  list.innerHTML = files.map(f => {
+    const on = f.sid == null || f.sid === st.sid;
+    const bind = f.sid == null ? 'All sessions' : f.sid === st.sid ? 'This session' : sidLabel(f.sid);
+    const tip = f.sid == null ? 'Used for every session in this project. Click to use it for this session only.'
+      : f.sid === st.sid ? 'Used when beautifying this session. Click to use it for every session.'
+      : 'Belongs to another session. Click to use it for this session.';
+    const spk = (f.speakers || []).length;
+    return `<div class="ext-item${on ? '' : ' off'}" data-name="${esc(f.name)}">
+      <div class="ext-main"><div class="ext-name" title="${esc(f.path)}">${esc(f.original)}</div>
+      <div class="ext-meta">${f.lines} lines${spk ? ` · ${spk} speaker${spk > 1 ? 's' : ''}: ${esc(f.speakers.slice(0, 4).join(', '))}${spk > 4 ? '…' : ''}` : ''}</div></div>
+      <button class="ext-bind" data-act="bind" title="${esc(tip)}">${esc(bind)}</button>
+      <button class="ext-del" data-act="del" title="Remove">×</button></div>`;
+  }).join('');
+}
+
+async function uploadExternal(fileList) {
+  if (!st.project) return;
+  for (const file of fileList) {
+    try {
+      const q = new URLSearchParams({ name: file.name, ...(st.sid ? { sid: st.sid } : {}) });
+      const res = await fetch(`${extUrl()}?${q}`, { method: 'PUT', body: file });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((d && d.detail) || `${res.status} ${res.statusText}`);
+      st.external = d;
+      renderExternal();
+      const rec = d.files[d.files.length - 1];
+      toast(`Added ${file.name}${rec && rec.speakers.length ? ` · ${rec.speakers.length} speakers` : ''}. Beautify will use it.`, 'ok');
+    } catch (e) { fail(e); }
+  }
+}
+
+$('#extUploadBtn').addEventListener('click', () => $('#extFile').click());
+$('#extFile').addEventListener('change', e => { uploadExternal([...e.target.files]); e.target.value = ''; });
+$('#extList').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const item = btn.closest('.ext-item'), name = item.dataset.name;
+  const f = st.external.files.find(x => x.name === name);
+  try {
+    if (btn.dataset.act === 'del') {
+      st.external = await api('DELETE', `${extUrl()}/${encodeURIComponent(name)}`);
+      toast(`Removed ${f ? f.original : name}`);
+    } else {
+      const sid = f && f.sid === st.sid ? null : st.sid;
+      st.external = await api('PATCH', `${extUrl()}/${encodeURIComponent(name)}`, { sid });
+    }
+    renderExternal();
+  } catch (err) { fail(err); }
+});
+{
+  const zone = $('#side-notes'), box = $('#extBox');
+  zone.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); box.classList.add('drag'); } });
+  zone.addEventListener('dragleave', e => { if (!zone.contains(e.relatedTarget)) box.classList.remove('drag'); });
+  zone.addEventListener('drop', e => {
+    if (!e.dataTransfer.files.length) return;
+    e.preventDefault(); box.classList.remove('drag');
+    uploadExternal([...e.dataTransfer.files]);
+  });
+}
+
 // ── Correction popover: select transcript text → fix it → goes to Notes ───
 function selectionInfo(win, root) {
   const sel = win.getSelection();
@@ -1221,20 +1814,45 @@ function selectionInfo(win, root) {
   if (!text || text.length > 400) return null;
   const range = sel.getRangeAt(0);
   if (root && !root.contains(range.commonAncestorContainer)) return null;
-  return { text, rect: range.getBoundingClientRect() };
+  return { text, rect: range.getBoundingClientRect(), time: selectionTime(range) };
 }
 
+// Time of the selected line: the transcript row, or the nearest time stamp in a Beautified document.
+function selectionTime(range) {
+  let n = range.startContainer;
+  if (n.nodeType !== 1) n = n.parentElement;
+  const row = n && n.closest('[data-time]');
+  if (row) return row.dataset.time;
+  for (let el = n; el && el.tagName !== 'BODY'; el = el.parentElement) {
+    const t = el.querySelector && el.querySelector('.time');
+    const m = t && /\d{2}:\d{2}:\d{2}/.exec(t.textContent);
+    if (m) return m[0];
+  }
+  return '';
+}
+
+let fixMode = 'fix';
 function openFixPop(info, offset = { x: 0, y: 0 }) {
   if (!st.project) return;
   const pop = $('#fixPop');
+  const who = fixMode === 'who';
+  const names = st.external.speakers || [];
   pop.innerHTML = `
-    <div class="pop-title">Correct the transcript</div>
-    <div class="pop-sub" style="margin-bottom:4px">Saved to Notes as a rule, so Beautify and Ask apply it everywhere, and live recognition uses it as a hint.</div>
+    <div class="pop-title">${who ? 'Who said it' : 'Correct the transcript'}</div>
+    <div class="seg" id="fixMode"><button data-m="fix" class="${who ? '' : 'on'}">Fix text</button><button data-m="who" class="${who ? 'on' : ''}">Who said it</button></div>
+    <div class="pop-sub" style="margin-bottom:4px">${who
+      ? 'Saved to Notes as <code>"quote" &lt;-- Name</code>, so Beautify attributes this line (and that voice) to the person.'
+      : 'Saved to Notes as a rule, so Beautify and Ask apply it everywhere, and live recognition uses it as a hint.'}</div>
+    ${who ? `
+    <label>Quote${info.time ? ` · ${esc(info.time)}` : ''}</label><div class="orig quote">${esc(info.text)}</div>
+    <label for="fixWho">Said by</label><input class="field" id="fixWho" list="fixWhoList" placeholder="e.g. Jane Doe" autocomplete="off">
+    <datalist id="fixWhoList">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="row-btns"><span class="kb"><kbd>↵</kbd> save · <kbd>esc</kbd> close</span><button class="ghost-btn small" id="fixCancel">Cancel</button><button class="primary-btn" id="fixSave" style="height:28px;font-size:12.5px">Add to notes</button></div>` : `
     <label>Heard</label><div class="orig">${esc(info.text)}</div>
     <label for="fixTo">Should be</label><textarea class="field" id="fixTo" rows="2">${esc(info.text)}</textarea>
     <label for="fixWhy">Comment <span style="text-transform:none;letter-spacing:0;font-weight:500">(optional)</span></label>
     <input class="field" id="fixWhy" placeholder="e.g. product name, person's name">
-    <div class="row-btns"><span class="kb"><kbd>↵</kbd> save · <kbd>esc</kbd> close</span><button class="ghost-btn small" id="fixCancel">Cancel</button><button class="primary-btn" id="fixSave" style="height:28px;font-size:12.5px">Add to notes</button></div>`;
+    <div class="row-btns"><span class="kb"><kbd>↵</kbd> save · <kbd>esc</kbd> close</span><button class="ghost-btn small" id="fixCancel">Cancel</button><button class="primary-btn" id="fixSave" style="height:28px;font-size:12.5px">Add to notes</button></div>`}`;
   pop.classList.remove('hidden');
   const r = info.rect, w = pop.offsetWidth, h = pop.offsetHeight;
   let left = r.left + offset.x + r.width / 2 - w / 2;
@@ -1242,12 +1860,27 @@ function openFixPop(info, offset = { x: 0, y: 0 }) {
   if (top + h > window.innerHeight - 10) top = Math.max(10, r.top + offset.y - h - 10);
   pop.style.left = `${Math.max(10, Math.min(left, window.innerWidth - w - 10))}px`;
   pop.style.top = `${top}px`;
-  const to = $('#fixTo');
-  to.focus(); to.select();
+  $('#fixMode').onclick = e => {
+    const b = e.target.closest('[data-m]');
+    if (b && b.dataset.m !== fixMode) { fixMode = b.dataset.m; openFixPop(info, offset); }
+  };
+  const field = who ? $('#fixWho') : $('#fixTo');
+  field.focus(); field.select();
   const save = async () => {
-    const fixed = to.value.replace(/\s+/g, ' ').trim();
-    if (!fixed || fixed === info.text) { closeFixPop(); return; }
     try {
+      if (who) {
+        const speaker = field.value.replace(/\s+/g, ' ').trim();
+        if (!speaker) { field.focus(); return; }
+        await saveNotesNow();
+        const d = await api('POST', notesUrl() + '/speaker', { quote: info.text, speaker, time: info.time || '' });
+        applyNotes(d.text, true);
+        if (!st.external.speakers.includes(speaker)) st.external.speakers.push(speaker);
+        closeFixPop();
+        toast(`Added to Notes: “${info.text}” ← ${speaker}`, 'ok');
+        return;
+      }
+      const fixed = field.value.replace(/\s+/g, ' ').trim();
+      if (!fixed || fixed === info.text) { closeFixPop(); return; }
       await saveNotesNow();
       const d = await api('POST', notesUrl() + '/correction', { original: info.text, fixed, comment: $('#fixWhy').value });
       applyNotes(d.text, true);

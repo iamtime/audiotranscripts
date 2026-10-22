@@ -20,19 +20,24 @@ import signal
 import sys
 import time
 import uuid
+import zipfile
 import webbrowser
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import beautify
 import claude_cli
+import external
+import select_frames as SF
 import sessions as S
+
+ENGINES = ("whisper", "gigaam", "parakeet")   # main.py --engine (see asr_engines.py)
 
 ROOT = S.ROOT
 WEB_DIR = ROOT / "web"
@@ -92,6 +97,7 @@ class Recorder:
         self.started_at = 0.0
         self.listening_at = 0.0
         self.lang = ""
+        self.engine = ""
         self.diarization = False
         self.error = ""
         self.entries: list[dict] = []
@@ -100,6 +106,9 @@ class Recorder:
         self.activity = {"kind": "idle"}
         self.options: dict = {}
         self.deleted: set[str] = set()
+        self.muted = False
+        self.auto_frames = False
+        self.frame_stats: dict = {}
         self.session_start: datetime | None = None
         # speech = seconds of the phrase being recorded (None = silence);
         # current = chunk Whisper is working on; pending = chunks waiting in the queue
@@ -113,8 +122,9 @@ class Recorder:
         return {
             "state": self.state, "detail": self.detail, "project": self.project, "sid": self.sid,
             "started_at": self.started_at, "listening_at": self.listening_at, "lang": self.lang,
-            "diarization": self.diarization, "error": self.error, "active": self.active,
+            "engine": self.engine, "diarization": self.diarization, "error": self.error, "active": self.active,
             "activity": self.activity, "options": self.options, "pipeline": self.pipeline,
+            "muted": self.muted, "auto_frames": self.auto_frames, "frame_stats": self.frame_stats,
             "minutes": self.options.get("minutes"),
         }
 
@@ -126,6 +136,8 @@ class Recorder:
             "screenshots": list(self.shots.values()), "diarized": False,
             "manifest": S.public_manifest(self.project, self.sid, S.load_manifest(self.project, self.sid))
             if self.sid else {"versions": []},
+            "visibility": S.load_visibility(self.project, self.sid) if self.sid
+            else {"lines": [], "shots": [], "frames": []},
         }
 
     def set_state(self, state: str, detail: str = ""):
@@ -153,12 +165,35 @@ class Recorder:
                "--events", str(events_path), "--control-stdin", "--capture-config", str(CAPTURE_CONFIG),
                "--lang", str(opts.get("lang") or "auto"), "--pause", str(float(opts.get("pause") or 1.5)),
                "--vocab-file", str(S.notes_path(project).resolve())]
+        engine = str(opts.get("engine") or "whisper")
+        if engine not in ENGINES:
+            raise HTTPException(400, f"Unknown engine: {engine}")
+        if engine == "gigaam" and str(opts.get("lang") or "auto") == "en":
+            raise HTTPException(400, "GigaAM recognizes Russian only; pick Auto/RU or another engine")
+        if engine != "whisper":
+            cmd += ["--engine", engine]
+        self.engine = engine
         speakers = str(opts.get("speakers") or "off")
         if speakers != "off":
             cmd += ["--speakers", speakers]
             self.diarization = True
         if opts.get("save_audio"):
             cmd.append("--save-audio")
+        if opts.get("auto_frames"):
+            cmd += ["--auto-frames", "1"]
+        if not settings.get("frames_l1", True):
+            cmd.append("--no-frames-l1")
+        continue_sid = (opts.get("continue_sid") or "").strip()
+        if continue_sid:
+            if not S.transcript_path(project, continue_sid).exists():
+                raise HTTPException(404, "The session to continue was not found")
+            cmd += ["--continue-session", S.safe_name(continue_sid)]
+            # Show what's already there; new lines are appended live.
+            existing = S.load_session(project, continue_sid)
+            self.sid = continue_sid
+            self.transcript_path = existing["transcript_path"]
+            self.entries = existing["entries"]
+            self.shots = {s["path"]: s for s in existing["screenshots"]}
         self.pipeline["pause"] = float(opts.get("pause") or 1.5)
 
         self.log.append("$ " + " ".join(cmd[1:]))
@@ -167,7 +202,8 @@ class Recorder:
             stderr=asyncio.subprocess.STDOUT, start_new_session=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1"}, limit=STREAM_LIMIT)
         S.save_settings({"last_project": project, **{k: opts[k] for k in
-                         ("lang", "speakers", "minutes", "pause", "save_audio") if k in opts}})
+                         ("engine", "lang", "speakers", "minutes", "pause", "save_audio", "auto_frames")
+                         if k in opts}})
         self.set_state("loading", "Starting recognizer")
         loop = asyncio.get_running_loop()
         loop.create_task(self._read_output())
@@ -258,6 +294,18 @@ class Recorder:
             pl["pause"] = ev.get("seconds")
         hub.emit({"type": "pipeline", **pl})
 
+    async def set_muted(self, muted: bool):
+        if not self.active or self.state != "listening":
+            raise HTTPException(409, "Not recording")
+        self.proc.stdin.write(b"MUTE\n" if muted else b"UNMUTE\n")
+        await self.proc.stdin.drain()
+
+    async def set_auto_frames(self, on: bool):
+        if not self.active or self.state != "listening":
+            raise HTTPException(409, "Not recording")
+        self.proc.stdin.write(b"AUTO ON\n" if on else b"AUTO OFF\n")
+        await self.proc.stdin.drain()
+
     async def set_pause(self, seconds: float):
         if not self.active:
             return
@@ -301,6 +349,9 @@ class Recorder:
             self._pipeline(t, ev)
         elif t == "segment_empty":
             pass
+        elif t == "muted":
+            self.muted = bool(ev.get("muted"))
+            hub.emit({"type": "recorder", **self.snapshot()})
         elif t == "segment":
             entry = {"time": ev["time"], "kind": "speech", "speaker": None, "text": ev["text"]}
             self._add_entry(entry)
@@ -323,6 +374,17 @@ class Recorder:
             shot["ocr_chars"] = ev.get("chars", 0)
             shot["ocr_error"] = ev.get("message") if t == "ocr_error" else None
             self._emit_shot(shot)
+        elif t == "auto_frames":
+            self.auto_frames = bool(ev.get("on"))
+            hub.emit({"type": "recorder", **self.snapshot()})
+        elif t == "frame_scene":
+            scene = {k: v for k, v in ev.items() if k not in ("type", "ts")}
+            scene["url"] = S.file_url(ev["path"])
+            scene["last_url"] = S.file_url(ev["last_path"]) if ev.get("last_path") else None
+            hub.emit({"type": "frame", "project": self.project, "sid": self.sid, "scene": scene})
+        elif t == "frame_stats":
+            self.frame_stats = {k: v for k, v in ev.items() if k not in ("type", "ts")}
+            hub.emit({"type": "frame_stats", "project": self.project, "sid": self.sid, **self.frame_stats})
         elif t == "lang":
             self.lang = ev.get("lang", "")
             hub.emit({"type": "recorder", **self.snapshot()})
@@ -343,6 +405,7 @@ class Recorder:
     def _add_entry(self, entry: dict):
         if entry.get("kind") == "screenshot" and entry.get("path") in self.deleted:
             entry["deleted"] = True
+        entry["key"] = S.line_key(entry)
         self.entries.append(entry)
         hub.emit({"type": "entry", "project": self.project, "sid": self.sid,
                   "idx": len(self.entries) - 1, "entry": entry})
@@ -366,11 +429,12 @@ class Recorder:
             self.set_state("idle", "Session finished")
         if sid:
             hub.emit({"type": "session_changed", "project": project, "sid": sid, "finished": True})
-            if S.load_settings().get("auto_final_beautify") and S.transcript_path(project, sid).exists():
-                try:
-                    await jobs.start(project, sid, "final")
-                except HTTPException:
-                    pass
+            has_speech = S.transcript_path(project, sid).exists() and any(
+                e["kind"] == "speech" for e in S.parse_transcript(S.read_transcript(project, sid)))
+            if S.load_settings().get("auto_final_beautify") and has_speech:
+                # Ask in the UI instead of starting a long run on its own; "Not now" leaves
+                # the Beautify button as the way to start it later.
+                hub.emit({"type": "offer_beautify", "project": project, "sid": sid})
 
 
 recorder = Recorder()
@@ -571,6 +635,13 @@ class ChatManager:
             notes_note = ("The user's notes and corrections for this project (authoritative; apply corrections "
                           f"to the transcript when answering):\n<notes>\n{notes}\n</notes>\n\n")
         data["notes_hash"] = notes_hash
+        ext_files = [str(p) for p in external.for_session(project, sid)]
+        ext_hash = hashlib.md5("\n".join(ext_files).encode()).hexdigest()
+        if ext_files and data.get("ext_hash") != ext_hash:
+            notes_note += ("External transcript(s) of the same meeting (e.g. Teams; reliable speaker names, often "
+                           "misrecognized terms). Read them when a question is about who said what:\n"
+                           + "".join(f"- {p}\n" for p in ext_files) + "\n")
+        data["ext_hash"] = ext_hash
         if prefix_ok:
             delta = transcript[data["sent_len"]:]
             body = (f"New transcript lines since my last message ({status}):\n<transcript_update>\n{delta}"
@@ -679,6 +750,16 @@ app.mount("/files", StaticFiles(directory=str(S.PROJECTS_DIR)), name="files")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
 
+@app.middleware("http")
+async def no_stale_frontend(request, call_next):
+    # Make the browser revalidate the UI files (cheap 304 via ETag), so an updated
+    # app.js/style.css shows up without a hard reload.
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/")
 async def index():
     return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
@@ -713,9 +794,10 @@ async def status():
 
 
 @app.get("/api/check-recorder")
-async def check_recorder():
+async def check_recorder(engine: str = "whisper"):
     python = S.load_settings().get("recorder_python") or sys.executable
-    rc, out, err = await run_cmd(python, "-c", "import faster_whisper, sounddevice, easyocr, torch; print('ok')")
+    asr_module = "faster_whisper" if engine == "whisper" else "onnx_asr"
+    rc, out, err = await run_cmd(python, "-c", f"import {asr_module}, sounddevice, easyocr, torch; print('ok')")
     return {"ok": rc == 0, "python": python, "error": (err or out).strip()[-300:]}
 
 
@@ -819,6 +901,62 @@ async def notes_correction(project: str, data: dict = Body(...)):
     return {"text": text}
 
 
+@app.post("/api/projects/{project}/notes/speaker")
+async def notes_speaker(project: str, data: dict = Body(...)):
+    quote, speaker = (data.get("quote") or "").strip(), (data.get("speaker") or "").strip()
+    if not quote or not speaker:
+        _err(ValueError("Both the quote and the speaker are needed"))
+    text = S.add_speaker(project, quote, speaker, (data.get("time") or "").strip())
+    hub.emit({"type": "notes", "project": project, "text": text})
+    return {"text": text}
+
+
+# ── External transcripts (e.g. Teams) of the same meeting ───────────────────
+
+def _external_state(project: str) -> dict:
+    files = external.public(project)
+    names = S.known_speakers(S.load_notes(project)) + [n for f in files for n in f.get("speakers", [])]
+    return {"files": files, "speakers": list(dict.fromkeys(names))}
+
+
+@app.get("/api/projects/{project}/external")
+async def external_list(project: str):
+    return _external_state(project)
+
+
+@app.put("/api/projects/{project}/external")
+async def external_upload(project: str, request: Request, name: str, sid: str | None = None):
+    try:
+        await asyncio.to_thread(external.add, project, name, await request.body(), sid or None)
+    except (ValueError, KeyError, zipfile.BadZipFile) as e:
+        _err(ValueError(f"Can't read {name}: {e}"))
+    state = _external_state(project)
+    hub.emit({"type": "external", "project": project, **state})
+    return state
+
+
+@app.patch("/api/projects/{project}/external/{name}")
+async def external_bind(project: str, name: str, data: dict = Body(...)):
+    try:
+        external.set_session(project, name, data.get("sid") or None)
+    except ValueError as e:
+        _err(e)
+    state = _external_state(project)
+    hub.emit({"type": "external", "project": project, **state})
+    return state
+
+
+@app.delete("/api/projects/{project}/external/{name}")
+async def external_delete(project: str, name: str):
+    try:
+        external.remove(project, name)
+    except ValueError as e:
+        _err(e)
+    state = _external_state(project)
+    hub.emit({"type": "external", "project": project, **state})
+    return state
+
+
 @app.delete("/api/projects/{project}/sessions/{sid}/screenshots/{name}")
 async def screenshot_delete(project: str, sid: str, name: str):
     path = S.project_dir(project) / "screenshots" / name
@@ -878,10 +1016,86 @@ async def record_pause(data: dict = Body(...)):
     return {"pause": seconds}
 
 
+@app.post("/api/record/mute")
+async def record_mute(data: dict = Body(...)):
+    await recorder.set_muted(bool(data.get("muted")))
+    return {"ok": True}
+
+
 @app.post("/api/record/snap")
 async def record_snap():
     await recorder.snap()
     return {"ok": True}
+
+
+@app.post("/api/record/auto")
+async def record_auto(data: dict = Body(...)):
+    on = bool(data.get("on"))
+    await recorder.set_auto_frames(on)
+    S.save_settings({"auto_frames": on})
+    return {"ok": True}
+
+
+# Auto frames (autoframes.py / select_frames.py)
+
+@app.get("/api/projects/{project}/sessions/{sid}/frames")
+async def frames_get(project: str, sid: str):
+    return SF.frames_payload(S.safe_name(project), S.safe_name(sid))
+
+
+@app.post("/api/projects/{project}/sessions/{sid}/frames/select")
+async def frames_select(project: str, sid: str, data: dict = Body(default={})):
+    project, sid = S.safe_name(project), S.safe_name(sid)
+    n = max(1, min(100, int(data.get("n") or 10)))
+    await asyncio.to_thread(SF.select, project, sid, n)
+    hub.emit({"type": "visibility", "project": project, "sid": sid, "visibility": S.load_visibility(project, sid)})
+    return SF.frames_payload(project, sid)
+
+
+@app.post("/api/projects/{project}/sessions/{sid}/visibility")
+async def visibility_set(project: str, sid: str, data: dict = Body(...)):
+    """Hide / show a transcript line, a screenshot or an auto frame (left out of Beautify)."""
+    project, sid = S.safe_name(project), S.safe_name(sid)
+    kind = data.get("kind")
+    keys = data.get("keys")
+    if kind not in ("line", "shot", "frame") or (not keys and data.get("key") in (None, "")):
+        _err(ValueError("Bad visibility change"))
+    if keys:
+        vis, _ = S.set_hidden_many(project, sid, kind, list(keys), bool(data.get("hidden")))
+    else:
+        vis = S.set_hidden(project, sid, kind, data["key"], bool(data.get("hidden")))
+    hub.emit({"type": "visibility", "project": project, "sid": sid, "visibility": vis})
+    return vis
+
+
+@app.post("/api/projects/{project}/sessions/{sid}/hide-similar")
+async def hide_similar(project: str, sid: str, data: dict = Body(...)):
+    """Hide a screenshot / auto frame and every picture of this session that looks like it
+    (CLIP, similar.py). Returns what was newly hidden, so the UI can undo it."""
+    import similar
+    project, sid = S.safe_name(project), S.safe_name(sid)
+    kind, key = data.get("kind"), data.get("key")
+    frames = {g["id"]: g["path"] for g in S.frame_groups(S.load_scenes(project, sid))}
+    shots = {Path(s["path"]).name: s["path"] for s in S.load_session(project, sid)["screenshots"]}
+    if kind == "frame" and int(key) in frames:
+        target = frames[int(key)]
+    elif kind == "shot" and key in shots:
+        target = shots[key]
+    else:
+        _err(ValueError("Unknown picture"))
+    try:
+        hit = await asyncio.to_thread(similar.similar_to, target, {("frame", k): v for k, v in frames.items()}
+                                      | {("shot", k): v for k, v in shots.items()})
+    except RuntimeError as e:
+        _err(e)
+    newly = {"frame": [], "shot": []}
+    vis = S.load_visibility(project, sid)
+    for k in ("frame", "shot"):
+        keys = [key_ for kk, key_ in hit if kk == k]
+        if keys:
+            vis, newly[k] = S.set_hidden_many(project, sid, k, keys, True)
+    hub.emit({"type": "visibility", "project": project, "sid": sid, "visibility": vis})
+    return {"visibility": vis, "hidden": newly}
 
 
 # Capture area
@@ -939,6 +1153,68 @@ async def capture_select(data: dict = Body(...)):
     cfg = {"mode": "region", "rect": obj["rect"]} if kind == "REGION" else {"mode": "window", **obj}
     S._write_json(CAPTURE_CONFIG, cfg)
     await _refresh_preview()
+    return _capture_info()
+
+
+@app.post("/api/capture/detect-video")
+async def capture_detect_video():
+    """Watch the capture area for a few seconds, find the playing video in it and crop auto
+    frames to it (frames_crop in the capture config). Screenshots keep the whole area."""
+    import cv2
+    import video_detect
+    if not CAPTURE_CONFIG.exists():
+        S._write_json(CAPTURE_CONFIG, {"mode": "full"})
+    cfg = S._read_json(CAPTURE_CONFIG, {"mode": "full"})
+    cfg.pop("frames_crop", None)
+    tmp = S.WEBUI_DIR / "detect"
+    tmp.mkdir(parents=True, exist_ok=True)
+    raw_cfg = tmp / "config.json"
+    S._write_json(raw_cfg, cfg)
+    images = []
+    try:
+        for i in range(12):
+            out = tmp / f"f{i:02d}.png"
+            rc, _, err = await run_cmd(str(HELPER), "--capture", str(raw_cfg), str(out), timeout=20)
+            if rc == 0 and out.exists():
+                images.append(cv2.imread(str(out)))
+            await asyncio.sleep(0.4)
+    finally:
+        for f in tmp.glob("f*.png"):
+            f.unlink(missing_ok=True)
+    images = [im for im in images if im is not None]
+    if len(images) < 4:
+        _err(RuntimeError("Could not capture the screen (check Screen Recording permission)"))
+    res = await asyncio.to_thread(video_detect.detect, images)
+    if not res:
+        _err(ValueError("No video found: nothing was changing. Play the video and try again."))
+    if res.get("error"):
+        _err(ValueError(res["error"]))
+    cfg["frames_crop"] = {k: res[k] for k in ("x", "y", "w", "h")}
+    cfg["frames_crop_method"] = res["method"]
+    S._write_json(CAPTURE_CONFIG, cfg)
+    await _refresh_preview()
+    return _capture_info()
+
+
+@app.post("/api/capture/crop")
+async def capture_crop(data: dict = Body(default={})):
+    """Set the auto-frames crop by hand ({"crop": {x, y, w, h}} in fractions of the area),
+    or reset it (no crop: auto frames capture the whole area again)."""
+    cfg = S._read_json(CAPTURE_CONFIG, {"mode": "full"})
+    crop = data.get("crop")
+    if crop:
+        try:
+            x, y, w, h = (float(crop[k]) for k in ("x", "y", "w", "h"))
+        except (KeyError, TypeError, ValueError):
+            _err(ValueError("Bad crop"))
+        x, y = min(max(x, 0.0), 0.98), min(max(y, 0.0), 0.98)
+        w, h = min(max(w, 0.02), 1.0 - x), min(max(h, 0.02), 1.0 - y)
+        cfg["frames_crop"] = {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+        cfg["frames_crop_method"] = "manual"
+    else:
+        cfg.pop("frames_crop", None)
+        cfg.pop("frames_crop_method", None)
+    S._write_json(CAPTURE_CONFIG, cfg)
     return _capture_info()
 
 
