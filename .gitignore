@@ -28,3 +28,8 @@ __pycache__/
 
 # ASR benchmark output (transcripts of client recordings)
 bench_out/
+
+# macOS app build (packaging/, app/)
+/build/
+app/node_modules/
+app/dist/

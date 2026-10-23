@@ -1,0 +1,85 @@
+{
+  "name": "voice-rec",
+  "productName": "Voice Rec",
+  "version": "1.0.0",
+  "description": "Local real-time speech-to-text with screenshots",
+  "main": "main.js",
+  "private": true,
+  "author": "Rauf Aliev",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg --arm64"
+  },
+  "build": {
+    "appId": "com.raufaliev.voicerec",
+    "productName": "Voice Rec",
+    "copyright": "Rauf Aliev",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "splash.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/stage/voice-rec",
+        "to": "voice-rec"
+      },
+      {
+        "from": "../build/python",
+        "to": "python"
+      },
+      {
+        "from": "../build/models",
+        "to": "models"
+      }
+    ],
+    "asar": true,
+    "afterPack": "build/after-pack.js",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "minimumSystemVersion": "14.0",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Voice Rec transcribes your speech locally, on this Mac.",
+        "NSScreenCaptureUsageDescription": "Voice Rec takes screenshots of what you are talking about.",
+        "NSAppleEventsUsageDescription": "Voice Rec copies the selected text when you press the capture hotkey.",
+        "LSApplicationCategoryType": "public.app-category.productivity"
+      }
+    },
+    "dmg": {
+      "format": "ULFO",
+      "title": "Voice Rec",
+      "contents": [
+        {
+          "x": 140,
+          "y": 190
+        },
+        {
+          "x": 400,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3"
+  }
+}

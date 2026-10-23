@@ -26,7 +26,7 @@ from pathlib import Path
 import claude_cli
 import external
 from sessions import (
-    ROOT, beautify_text, latest_version, load_manifest, load_notes, load_project_settings, load_settings, notes_path,
+    DATA_ROOT, ROOT, beautify_text, latest_version, load_manifest, load_notes, load_project_settings, load_settings, notes_path,
     parse_transcript, project_dir, save_manifest, session_dir, shot_time,
     sid_datetime, transcript_path,
 )
@@ -210,7 +210,7 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
     manifest["versions"].append(record)
     save_manifest(project, sid, manifest)
 
-    cwd = Path(context_dir).expanduser() if context_dir and Path(context_dir).expanduser().is_dir() else ROOT
+    cwd = Path(context_dir).expanduser() if context_dir and Path(context_dir).expanduser().is_dir() else DATA_ROOT
     return {
         "project": project, "sid": sid, "v": v, "mode": mode, "out": out, "input": snapshot,
         "prompt": prompt, "cwd": cwd, "style": style, "settings": settings,

@@ -7,13 +7,17 @@ chat history, events) live in projects/<project>/sessions/<sid>/.
 
 import hashlib
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PROJECTS_DIR = ROOT / "projects"
-WEBUI_DIR = ROOT / ".webui"
+# Where projects/ and .webui/ live: the code folder by default; the macOS app
+# (app/main.js) points it at a writable folder outside the read-only bundle.
+DATA_ROOT = Path(os.environ.get("VOICE_REC_DATA") or ROOT).expanduser().resolve()
+PROJECTS_DIR = DATA_ROOT / "projects"
+WEBUI_DIR = DATA_ROOT / ".webui"
 
 LINE_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s?(.*)$")
 SPEAKER_RE = re.compile(r"^\[Speaker (\d+)\]\s?(.*)$", re.S)

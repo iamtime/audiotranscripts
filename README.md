@@ -166,6 +166,26 @@ python beautify.py myproject 20260928_110051 --mode full     # or: latest, --mod
 
 Files: versions in `projects/<p>/sessions/<sid>/vN.html` (+ `manifest.json`, transcript snapshots, `chat.json`, `events.jsonl`); notes in `projects/<p>/notes.md`; external transcripts in `projects/<p>/external/`; UI state in `.webui/`.
 
+### macOS app
+
+`Voice Rec.app` is the web UI in its own window, with everything inside: Python 3.12 and all dependencies, the screenshot helper, ffmpeg and (by default) all models -- Silero VAD, Whisper large-v3-turbo, GigaAM v3, Parakeet v3, CLIP, ECAPA, EasyOCR. Nothing has to be installed; it works offline. Apple Silicon (M1 or later), macOS 14+.
+
+Build it (`app/dist/Voice Rec-<version>-arm64.dmg`, ~4 GB with all models):
+
+```bash
+packaging/build_app.sh                 # Python runtime + models + helper + Electron → DMG
+MODELS=core packaging/build_app.sh     # without Whisper/Parakeet (~1.5 GB smaller; downloaded on first use)
+MODELS=none packaging/build_app.sh     # no models at all
+REBUILD_PYTHON=1 packaging/build_app.sh   # after changing packaging/requirements-app.txt
+cd app && npm start                    # dev run: repo sources, build/python, build/models
+```
+
+The steps are separate scripts: `packaging/build_python.sh` (relocatable [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython in `build/python`, pinned deps from `packaging/requirements-app.txt`), `packaging/fetch_models.py` (clone-copies models from the local caches into `build/models`, downloads the missing ones), `app/` (Electron shell, `electron-builder` config in `app/package.json`).
+
+How it runs: the app starts the bundled `server.py` on a free local port and opens it in a window. Data lives in `~/Library/Application Support/Voice Rec/data` (`projects/`, `.webui/`, `logs/server.log`); **File → Change Data Folder…** points it elsewhere, e.g. at this repo to reuse its projects. On first launch the bundled models are copied into `data/models` (an APFS clone: instant and no extra disk space when the app is in /Applications), so the libraries see a normal writable cache. Beautify and chat need [Claude Code](https://claude.com/claude-code) installed (`claude` is looked up in the login shell's `PATH`). Code paths: `VOICE_REC_DATA` (data folder), `VOICE_REC_SILERO_DIR`, `VOICE_REC_RECORDER_PYTHON`; without them the console tools and `server.py` behave exactly as before.
+
+Signing: with a "Developer ID Application" certificate in the keychain the build is signed with it, and notarized when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are set -- then it opens on any Mac with no warnings. Without one the app is signed ad hoc: on another Mac the first launch is blocked as from an unidentified developer -- open it once via right-click → **Open** (macOS 15+: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr "/Applications/Voice Rec.app"`. macOS then asks for Microphone, Screen Recording (first screenshot) and Accessibility (selection capture) permissions; **Help** has shortcuts to these settings.
+
 ### Re-diarization
 
 If speaker labels need tuning, re-run diarization on saved session data without re-recording:
@@ -320,7 +340,9 @@ Key constants in `main.py`:
 | `rediarize.py` | Re-run diarization on saved sessions with different parameters |
 | `process_transcript.py` | LLM-based transcript cleanup and HTML generation |
 | `server.py` | Web UI server (FastAPI + WebSocket); drives `main.py`, Beautify and chat |
-| `web/` | Web UI front end (static HTML/CSS/JS, no build step, Electron-ready) |
+| `web/` | Web UI front end (static HTML/CSS/JS, no build step) |
+| `app/` | macOS app: Electron shell (`main.js`), build config (`package.json`), icon and entitlements |
+| `packaging/` | macOS app build: `build_app.sh`, bundled Python runtime, models, icon |
 | `beautify.py` | Full annotated transcript via Claude Code (also a console tool) |
 | `claude_cli.py` | Helpers for headless `claude -p` (stream-json parsing, progress labels) |
 | `sessions.py` | Transcript parsing, session listing, settings, notes (corrections, speakers), beautify manifests |

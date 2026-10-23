@@ -1,0 +1,28 @@
+# Python runtime bundled into the macOS app (packaging/build_python.sh).
+# Pinned to the versions the recorder is known to work with (conda env p3124).
+numpy==1.26.4
+torch==2.4.1
+torchaudio==2.4.1
+torchvision==0.19.1
+faster-whisper==1.2.1
+ctranslate2==4.8.0
+onnx-asr[cpu,hub]==0.12.0
+onnxruntime==1.27.0
+sounddevice==0.5.5
+easyocr==1.7.2
+opencv-python-headless==4.10.0.84
+scipy==1.13.1
+scikit-image==0.24.0
+scikit-learn==1.5.1
+pillow==10.4.0
+speechbrain==1.1.0
+transformers==4.36.0
+huggingface-hub==0.34.4
+fastapi==0.114.0
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+# Beautify with the "api" engine (process_transcript2.py)
+google-genai==1.29.0
+openai==1.99.2
+# MP3 export: a static ffmpeg binary (main.py finds it via PATH, see app/main.js)
+imageio-ffmpeg==0.6.0

@@ -86,6 +86,11 @@ async def run_cmd(*cmd, timeout=120) -> tuple[int, str, str]:
 
 # ── Recorder (main.py subprocess) ────────────────────────────────────────────
 
+def recorder_python(settings: dict) -> str:
+    # The macOS app pins its bundled interpreter, whatever a shared settings.json says.
+    return os.environ.get("VOICE_REC_RECORDER_PYTHON") or settings.get("recorder_python") or sys.executable
+
+
 class Recorder:
     def __init__(self):
         self.proc: asyncio.subprocess.Process | None = None
@@ -149,7 +154,7 @@ class Recorder:
             raise HTTPException(409, "A recording is already running")
         project = S.safe_name(opts.get("project", ""))
         settings = S.load_settings()
-        python = settings.get("recorder_python") or sys.executable
+        python = recorder_python(settings)
         self.__init__()
         self.project = project
         self.options = opts
@@ -198,7 +203,7 @@ class Recorder:
 
         self.log.append("$ " + " ".join(cmd[1:]))
         self.proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=str(ROOT), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            *cmd, cwd=str(S.DATA_ROOT), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, start_new_session=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1"}, limit=STREAM_LIMIT)
         S.save_settings({"last_project": project, **{k: opts[k] for k in
@@ -661,8 +666,8 @@ class ChatManager:
         msg = next(m for m in data["messages"] if m["id"] == msg_id)
         settings = S.load_settings()
         psettings = S.load_project_settings(project)
-        ctx = Path(psettings["context_dir"]).expanduser() if psettings["context_dir"] else ROOT
-        cwd = ctx if ctx.is_dir() else ROOT
+        ctx = Path(psettings["context_dir"]).expanduser() if psettings["context_dir"] else S.DATA_ROOT
+        cwd = ctx if ctx.is_dir() else S.DATA_ROOT
 
         def push(**kw):
             hub.emit({"type": "chat_update", "project": project, "sid": sid, "id": msg_id, **kw})
@@ -795,7 +800,7 @@ async def status():
 
 @app.get("/api/check-recorder")
 async def check_recorder(engine: str = "whisper"):
-    python = S.load_settings().get("recorder_python") or sys.executable
+    python = recorder_python(S.load_settings())
     asr_module = "faster_whisper" if engine == "whisper" else "onnx_asr"
     rc, out, err = await run_cmd(python, "-c", f"import {asr_module}, sounddevice, easyocr, torch; print('ok')")
     return {"ok": rc == 0, "python": python, "error": (err or out).strip()[-300:]}

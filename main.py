@@ -77,11 +77,15 @@ def load_models(engine_name="whisper", asr_model=None):
 
     print("Loading Silero VAD...")
     events.emit("status", state="loading", detail="Loading Silero VAD")
-    vad_model, utils = torch.hub.load(
-        repo_or_dir="snakers4/silero-vad",
-        model="silero_vad",
-        trust_repo=True,
-    )
+    silero_dir = os.environ.get("VOICE_REC_SILERO_DIR")   # bundled copy (macOS app)
+    if silero_dir and Path(silero_dir, "hubconf.py").exists():
+        vad_model, utils = torch.hub.load(repo_or_dir=silero_dir, model="silero_vad", source="local")
+    else:
+        vad_model, utils = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            trust_repo=True,
+        )
     print("Silero VAD loaded.")
     return asr_engine, vad_model
 
