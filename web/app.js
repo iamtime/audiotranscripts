@@ -1495,11 +1495,22 @@ async function openSettings() {
   let ps = { context_dir: '', style_reference: '', notes: '' };
   if (st.project) { try { ps = await api('GET', `/api/projects/${encodeURIComponent(st.project)}/settings`); } catch (_) { /* */ } }
   const s = st.settings;
+  let aiInfo = null;
+  try { aiInfo = await api('GET', '/api/ai'); } catch (_) { /* old server: no AI choice */ }
+  const picker = aiInfo && aiPicker(aiInfo);
   const modelOpts = (cur) => ['opus', 'sonnet', 'haiku'].map(m => `<option value="${m}" ${cur === m ? 'selected' : ''}>${m[0].toUpperCase() + m.slice(1)}</option>`).join('')
     + (cur && !['opus', 'sonnet', 'haiku'].includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : '');
   openModal(`
-    <div class="modal-head"><h2>Settings</h2><p>Beautify and chat run through ${s.beautify_engine === 'api' ? 'an AI provider\'s API' : 'Claude Code, so they can view screenshots and use your MCP servers'}.</p></div>
+    <div class="modal-head"><h2>Settings</h2></div>
     <div class="modal-body">
+      <fieldset class="fset"><legend>AI for Beautify and chat</legend>
+        ${picker ? picker.html : ''}
+        <div class="ai-claude">
+        <div class="frow"><label>Beautify model</label><select class="field" id="setBModel">${modelOpts(s.beautify_model)}</select></div>
+        <div class="frow"><label>Chat model</label><select class="field" id="setCModel">${modelOpts(s.chat_model)}</select></div>
+        </div>
+        <div class="frow"><label>Final version</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setAuto" ${s.auto_final_beautify ? 'checked' : ''}><span class="knob"></span>Offer to build the final version when recording stops</label></div>
+      </fieldset>
       ${st.project ? `<fieldset class="fset"><legend>Project · ${esc(st.project)}</legend>
         <div class="frow"><label>Knowledge folder</label><input class="field" id="setCtx" value="${esc(ps.context_dir)}" placeholder="/Users/you/Documents/CLIENT">
           <div class="help">Claude Code runs in this folder, so the MCP servers configured there (e.g. <b>claude-context</b>) power the NEW / CONFIRMS / UPDATES callouts.</div></div>
@@ -1507,12 +1518,6 @@ async function openSettings() {
           <div class="help">An HTML document whose look to copy (style only, never its content).</div></div>
         <div class="frow"><label>Notes</label><div class="help" style="grid-column:2;margin:6px 0 0">Context and corrections live in the <b>Notes</b> tab (<code>notes.md</code> in the project folder).</div></div>
       </fieldset>` : ''}
-      <fieldset class="fset"><legend>AI</legend>
-        <div class="frow"><label>Provider</label><div style="display:flex;gap:8px;align-items:center"><span class="ai-sum ${st.ai && st.ai.ready ? 'ok' : 'bad'}">${esc(st.ai ? st.ai.label : '')}${st.ai && !st.ai.ready ? ` — ${esc(st.ai.problem)}` : ''}</span><button class="ghost-btn small" id="aiChange" style="height:30px">Change…</button></div></div>
-        ${s.beautify_engine !== 'api' ? `<div class="frow"><label>Beautify model</label><select class="field" id="setBModel">${modelOpts(s.beautify_model)}</select></div>
-        <div class="frow"><label>Chat model</label><select class="field" id="setCModel">${modelOpts(s.chat_model)}</select></div>` : ''}
-        <div class="frow"><label>Final version</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setAuto" ${s.auto_final_beautify ? 'checked' : ''}><span class="knob"></span>Offer to build the final version when recording stops</label></div>
-      </fieldset>
       <fieldset class="fset"><legend>Recognizer</legend>
         <div class="frow" ${st.bundledPython ? 'hidden' : ''}><label>Python</label><div style="display:flex;gap:8px"><input class="field" id="setPy" value="${esc(s.recorder_python)}" placeholder="Same as the server"><button class="ghost-btn small" id="checkPy" style="height:30px">Check</button></div>
           <div class="help">The interpreter that has faster-whisper, torch and easyocr installed. <span id="checkRes" class="check-res"></span></div></div>
@@ -1523,7 +1528,13 @@ async function openSettings() {
     <div class="modal-foot"><button class="ghost-btn" data-close>Cancel</button><button class="primary-btn" id="saveSettings">Save</button></div>`,
   root => {
     $('[data-close]', root).onclick = closeModal;
-    $('#aiChange', root).onclick = () => openAiSetup();
+    const ai = picker && picker.mount(root);
+    // Claude Code model choices only make sense with Claude Code.
+    const syncClaude = () => $('.ai-claude', root).classList.toggle('hidden', !!ai && ai.form().engine !== 'claude');
+    $$('.ai-card', root).forEach(c => c.addEventListener('click', syncClaude));
+    syncClaude();
+    const ai0 = ai && JSON.stringify(ai.form());
+    const aiChanged = () => !!ai && JSON.stringify(ai.form()) !== ai0;
     $('#checkPy', root).onclick = async () => {
       await api('POST', '/api/settings', { recorder_python: $('#setPy').value.trim() });
       const r = await api('GET', `/api/check-recorder?engine=${encodeURIComponent(st.settings.engine || 'whisper')}`);
@@ -1531,16 +1542,19 @@ async function openSettings() {
       el.textContent = r.ok ? `✓ ${r.python} is ready` : `✗ ${r.error}`;
     };
     $('#saveSettings', root).onclick = async () => {
+      const why = aiChanged() && ai.missing();
+      if (why) { toast(why, 'error'); return; }
       try {
+        if (aiChanged()) await api('POST', '/api/ai', ai.form());
         st.settings = await api('POST', '/api/settings', {
-          ...($('#setBModel') ? { beautify_model: $('#setBModel').value, chat_model: $('#setCModel').value } : {}),
+          beautify_model: $('#setBModel').value, chat_model: $('#setCModel').value,
           auto_final_beautify: $('#setAuto').checked, recorder_python: $('#setPy').value.trim(),
           frames_l1: $('#setL1').checked,
         });
         if (st.project) await api('POST', `/api/projects/${encodeURIComponent(st.project)}/settings`, {
           context_dir: $('#setCtx').value.trim(), style_reference: $('#setStyle').value.trim(),
         });
-        closeModal(); toast('Settings saved', 'ok'); renderBeautify();
+        closeModal(); toast('Settings saved', 'ok'); await refreshAi();
       } catch (e) { fail(e); }
     };
   });
@@ -1548,37 +1562,31 @@ async function openSettings() {
 $('#settingsBtn').onclick = openSettings;
 
 // ── AI provider (Beautify + chat): Claude Code or an LLM API ────────────────
-async function openAiSetup({ firstRun = false } = {}) {
-  let a;
-  try { a = await api('GET', '/api/ai'); } catch (e) { fail(e); return; }
-  const sel = { engine: a.engine === 'claude' && !a.claude ? 'api' : a.engine, provider: a.provider };
+// The AI picker (cards + key / host / model), shared by the first-run dialog and Settings.
+function aiPicker(a) {
   const P = a.providers;
-  const card = (id, title, sub, disabled) => `<button class="ai-card ${disabled ? 'off' : ''}" data-id="${id}" ${disabled ? 'disabled' : ''}><b>${esc(title)}</b><span>${sub}</span></button>`;
-  openModal(`
-    <div class="modal-head"><h2>${firstRun ? 'Welcome to Voice Rec' : 'AI for Beautify and chat'}</h2>
-      <p>${firstRun ? 'Recording and transcription work fully offline. To turn transcripts into annotated documents (Beautify) and to chat about them, choose an AI.' : 'Beautify and chat use this AI. Recording does not need it.'}</p></div>
-    <div class="modal-body">
+  const sel = { engine: a.engine === 'claude' && !a.claude ? 'api' : a.engine, provider: a.provider };
+  const card = (id, title, sub, disabled) => `<button type="button" class="ai-card ${disabled ? 'off' : ''}" data-id="${id}" ${disabled ? 'disabled' : ''}><b>${esc(title)}</b><span>${sub}</span></button>`;
+  const html = `
       <div class="ai-cards">
         ${card('claude', 'Claude Code', a.claude ? 'Installed · best results: sees screenshots, uses your MCP servers' : 'Not installed on this Mac (<a href="https://claude.com/claude-code" target="_blank">get it</a>)', !a.claude)}
         ${Object.entries(P).map(([id, p]) => card(id, p.name, p.key ? `Key saved (${esc(p.key)})` : p.env_key ? 'Key from environment' : id === 'custom' ? 'Ollama, LM Studio, vLLM, any OpenAI-style API' : 'Needs an API key', false)).join('')}
       </div>
-      <div id="aiApi" class="ai-api">
-        <div class="frow"><label>API key</label><div><input class="field" id="aiKey" type="password" autocomplete="off" placeholder="">
+      <div class="ai-api">
+        <div class="frow"><label>API key</label><div><input class="field" id="aiKey" type="password" autocomplete="off">
           <div class="help" id="aiKeyHelp"></div></div></div>
-        <div class="frow"><label>Host (base URL)</label><div><input class="field" id="aiBase" placeholder="">
+        <div class="frow"><label>Host (base URL)</label><div><input class="field" id="aiBase">
           <div class="help">OpenAI-compatible endpoint. Leave empty for the provider's default.</div></div></div>
-        <div class="frow"><label>Model</label><div style="display:flex;gap:8px"><input class="field" id="aiModel" list="aiModels" placeholder=""><datalist id="aiModels"></datalist>
-          <button class="ghost-btn small" id="aiTest" style="height:30px;white-space:nowrap">Test</button></div>
-          <div class="help"><span id="aiTestRes" class="check-res"></span></div></div>
+        <div class="frow"><label>Model</label><div><div style="display:flex;gap:8px"><input class="field" id="aiModel" list="aiModels"><datalist id="aiModels"></datalist>
+          <button type="button" class="ghost-btn small" id="aiTest" style="height:30px;white-space:nowrap">Test</button></div>
+          <div class="help"><span id="aiTestRes" class="check-res"></span></div></div></div>
         <div class="help ai-note">With an API, Beautify is one pass over the transcript and the screenshots' text (no images, no tools); chat sees the transcript and your notes.</div>
-      </div>
-    </div>
-    <div class="modal-foot">${firstRun ? '<button class="ghost-btn" id="aiLater">Later</button>' : '<button class="ghost-btn" data-close>Cancel</button>'}<button class="primary-btn" id="aiSave">Save</button></div>`,
-  root => {
+      </div>`;
+  const mount = root => {
     const show = () => {
       $$('.ai-card', root).forEach(c => c.classList.toggle('on', sel.engine === 'claude' ? c.dataset.id === 'claude' : c.dataset.id === sel.provider));
       const isApi = sel.engine === 'api';
-      $('#aiApi', root).classList.toggle('hidden', !isApi);
+      $('.ai-api', root).classList.toggle('hidden', !isApi);
       if (!isApi) return;
       const p = P[sel.provider];
       const same = sel.provider === a.provider;
@@ -1609,6 +1617,33 @@ async function openAiSetup({ firstRun = false } = {}) {
         el.textContent = r.ok ? `✓ Works${r.reply ? ` (answered “${r.reply}”)` : ''}${r.models && r.models.length ? ` · ${r.models.length} models available` : ''}` : `✗ ${r.error}`;
       } catch (e) { el.className = 'check-res bad'; el.textContent = `✗ ${e.message}`; }
     };
+    // '' when the choice can be saved, else what is missing (and focus goes there).
+    const missing = () => {
+      const f = form();
+      if (f.engine !== 'api') return '';
+      const p = P[f.provider];
+      if (!f.api_key && !p.key && !p.env_key && f.provider !== 'custom') { $('#aiKey', root).focus(); return 'Enter the API key'; }
+      if (f.provider === 'custom' && !f.base_url) { $('#aiBase', root).focus(); return 'Enter the host (base URL)'; }
+      if (f.provider === 'custom' && !f.model) { $('#aiModel', root).focus(); return 'Enter the model name'; }
+      return '';
+    };
+    show();
+    return { form, missing };
+  };
+  return { html, mount };
+}
+
+async function openAiSetup({ firstRun = false } = {}) {
+  let a;
+  try { a = await api('GET', '/api/ai'); } catch (e) { fail(e); return; }
+  const picker = aiPicker(a);
+  openModal(`
+    <div class="modal-head"><h2>${firstRun ? 'Welcome to Voice Rec' : 'AI for Beautify and chat'}</h2>
+      <p>${firstRun ? 'Recording and transcription work fully offline. To turn transcripts into annotated documents (Beautify) and to chat about them, choose an AI. You can change it later in Settings.' : 'Beautify and chat use this AI. Recording does not need it.'}</p></div>
+    <div class="modal-body">${picker.html}</div>
+    <div class="modal-foot">${firstRun ? '<button class="ghost-btn" id="aiLater">Later</button>' : '<button class="ghost-btn" data-close>Cancel</button>'}<button class="primary-btn" id="aiSave">Save</button></div>`,
+  root => {
+    const ai = picker.mount(root);
     const close = $('[data-close]', root); if (close) close.onclick = closeModal;
     const later = $('#aiLater', root);
     if (later) later.onclick = async () => {
@@ -1617,19 +1652,15 @@ async function openAiSetup({ firstRun = false } = {}) {
       closeModal(); refreshAi();
     };
     $('#aiSave', root).onclick = async () => {
-      const f = form();
-      const p = P[f.provider];
-      if (f.engine === 'api' && !f.api_key && !p.key && !p.env_key && f.provider !== 'custom') { toast('Enter the API key', 'error'); $('#aiKey', root).focus(); return; }
-      if (f.engine === 'api' && f.provider === 'custom' && !f.base_url) { toast('Enter the host (base URL)', 'error'); $('#aiBase', root).focus(); return; }
-      if (f.engine === 'api' && f.provider === 'custom' && !f.model) { toast('Enter the model name', 'error'); $('#aiModel', root).focus(); return; }
+      const why = ai.missing();
+      if (why) { toast(why, 'error'); return; }
       try {
-        const r = await api('POST', '/api/ai', f);
+        const r = await api('POST', '/api/ai', ai.form());
         closeModal();
         await refreshAi();
         toast(r.ready ? `AI: ${r.label}` : `Saved, but: ${r.problem}`, r.ready ? 'ok' : 'error');
       } catch (e) { fail(e); }
     };
-    show();
   });
 }
 async function refreshAi() {
@@ -2052,6 +2083,5 @@ $('#docFrame').addEventListener('load', () => {
   } catch (e) { fail(e); renderAll(); }
   loadCapture();
   connect();
-  // First start: ask which AI to use, unless Claude Code is there in a dev checkout (nothing to choose).
-  if (st.ai && !st.ai.setup_done && (!st.claude || st.bundledPython)) openAiSetup({ firstRun: true });
+  if (st.ai && !st.ai.setup_done) openAiSetup({ firstRun: true });   // first start: which AI to use
 })();
