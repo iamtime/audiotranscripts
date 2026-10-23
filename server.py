@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 import beautify
 import claude_cli
 import downloads
+import llm_api
 import external
 import select_frames as SF
 import sessions as S
@@ -514,8 +515,20 @@ class BeautifyJobs:
         stderr_tail = ""
         try:
             if spec["settings"]["beautify_engine"] == "api":
-                self.step(job, "Generating with API model (single pass)")
-                await asyncio.to_thread(beautify.run_api, spec)
+                self.step(job, f"Writing the document with {llm_api.status(spec['settings'], True)['label']}")
+                loop = asyncio.get_running_loop()
+                last = [0.0]
+
+                def progress(chars: int):
+                    if time.time() - last[0] < 1.5:
+                        return
+                    last[0] = time.time()
+
+                    def show():
+                        job["steps"][-1]["text"] = f"Writing the document · {chars:,} characters"
+                        self.broadcast(job)
+                    loop.call_soon_threadsafe(show)
+                await asyncio.to_thread(beautify.run_api, spec, progress)
                 ok = True
             else:
                 proc = await asyncio.create_subprocess_exec(
@@ -605,6 +618,12 @@ with the Read tool when relevant. If a project knowledge base (claude-context MC
 question needs background. Never modify files."""
 
 
+CHAT_SYSTEM_API = """You are the assistant inside a live transcription app. The user asks about the transcript \
+below, of a meeting or walkthrough that may still be recording. Answer concisely in the language of the question, \
+using Markdown. Cite moments with their [HH:MM:SS] timestamps. The transcript is raw speech-to-text, so expect \
+recognition errors and interpret sensibly; lines like [screenshot: path] mark screen captures (you cannot see them)."""
+
+
 class ChatManager:
     def __init__(self):
         self.busy: set[tuple[str, str]] = set()
@@ -682,6 +701,9 @@ class ChatManager:
         def push(**kw):
             hub.emit({"type": "chat_update", "project": project, "sid": sid, "id": msg_id, **kw})
 
+        if settings.get("beautify_engine") == "api":
+            await self._run_api(project, sid, data, msg, question, settings, push)
+            return
         try:
             prompt = self._prompt(project, sid, data, question)
             cmd = claude_cli.build_command(
@@ -729,6 +751,44 @@ class ChatManager:
         finally:
             msg.pop("_after_tool", None)
             self.procs.pop(key, None)
+            self.busy.discard(key)
+            self.save(project, sid, data)
+            push(status=msg["status"], text=msg["text"], error=msg.get("error"), done=True)
+
+    async def _run_api(self, project, sid, data, msg, question, settings, push):
+        """Chat through an API model (no tools): the transcript, notes and external
+        transcripts go into the system prompt, earlier turns as messages."""
+        key = (project, sid)
+        try:
+            live = recorder.active and recorder.project == project and recorder.sid == sid
+            system = CHAT_SYSTEM_API + f"\n\nTranscript ({'still recording' if live else 'recording finished'}):\n" \
+                f"<transcript>\n{S.read_transcript(project, sid)}</transcript>"
+            notes = S.load_notes(project).strip()
+            if notes:
+                system += f"\n\nThe user's notes and corrections (authoritative):\n<notes>\n{notes}\n</notes>"
+            for p in external.for_session(project, sid):
+                system += (f"\n\nExternal transcript of the same meeting ({p.name}; reliable speaker names, "
+                           f"often misrecognized terms):\n<external>\n{p.read_text(encoding='utf-8', errors='replace')}"
+                           f"\n</external>")
+            history = [{"role": m["role"], "content": m["text"]} for m in data["messages"]
+                       if m["id"] != msg["id"] and m.get("text")
+                       and (m["role"] == "user" or m.get("status", "done") == "done")]
+            loop = asyncio.get_running_loop()
+
+            def delta(d):
+                def apply():
+                    msg["text"] += d
+                    msg["status"] = "streaming"
+                    push(delta=d, status="streaming")
+                loop.call_soon_threadsafe(apply)
+            cfg = llm_api.config(settings)
+            await asyncio.to_thread(llm_api.stream, cfg, [{"role": "system", "content": system}, *history], delta)
+            await asyncio.sleep(0)   # let the last deltas land
+            msg["status"] = "done"
+        except Exception as e:
+            msg["status"] = "error"
+            msg["error"] = llm_api.explain(e) if not isinstance(e, RuntimeError) else str(e)
+        finally:
             self.busy.discard(key)
             self.save(project, sid, data)
             push(status=msg["status"], text=msg["text"], error=msg.get("error"), done=True)
@@ -807,8 +867,53 @@ def _err(e: Exception):
 
 @app.get("/api/status")
 async def status():
-    return {"claude": bool(claude_cli.claude_binary()), "helper": HELPER.exists(), "models": downloads.engine_models(),
+    settings = S.load_settings()
+    claude = bool(claude_cli.claude_binary())
+    return {"claude": claude, "helper": HELPER.exists(), "models": downloads.engine_models(),
+            "ai": llm_api.status(settings, claude), "bundled_python": bool(os.environ.get("VOICE_REC_RECORDER_PYTHON")),
             "settings": S.load_settings(), "recorder": recorder.snapshot()}
+
+
+@app.get("/api/ai")
+async def ai_get():
+    settings = S.load_settings()
+    claude = bool(claude_cli.claude_binary())
+    return {**llm_api.public(settings), **llm_api.status(settings, claude), "claude": claude}
+
+
+@app.post("/api/ai")
+async def ai_set(data: dict = Body(...)):
+    """{engine: claude|api, provider, model, base_url, api_key?, clear_key?}"""
+    engine = data.get("engine", "claude")
+    if engine not in ("claude", "api"):
+        _err(ValueError("Bad engine"))
+    upd = {"beautify_engine": engine, "ai_setup_done": True}
+    if engine == "api":
+        provider = data.get("provider") or "gemini"
+        if provider not in llm_api.PROVIDERS:
+            _err(ValueError("Unknown provider"))
+        upd.update(api_provider=provider, api_model=(data.get("model") or "").strip(),
+                   api_base_url=(data.get("base_url") or "").strip())
+        if data.get("api_key"):
+            llm_api.set_key(provider, data["api_key"])
+        elif data.get("clear_key"):
+            llm_api.set_key(provider, None)
+    S.save_settings(upd)
+    return await ai_get()
+
+
+@app.post("/api/ai/test")
+async def ai_test(data: dict = Body(...)):
+    provider = data.get("provider") or "gemini"
+    if provider not in llm_api.PROVIDERS:
+        _err(ValueError("Unknown provider"))
+    cfg = llm_api.config({"api_provider": provider, "api_model": data.get("model") or "",
+                          "api_base_url": data.get("base_url") or ""})
+    if data.get("api_key"):
+        cfg["key"] = data["api_key"].strip()
+    if not cfg["key"] and provider != "custom":
+        return {"ok": False, "error": "Enter the API key"}
+    return await asyncio.to_thread(llm_api.test, cfg)
 
 
 @app.get("/api/check-recorder")
@@ -886,8 +991,9 @@ async def chat_ask(project: str, sid: str, data: dict = Body(...)):
     text = (data.get("text") or "").strip()
     if not text:
         _err(ValueError("Empty question"))
-    if not claude_cli.claude_binary():
-        _err(RuntimeError("Claude Code CLI is not installed"))
+    ai = llm_api.status(S.load_settings(), bool(claude_cli.claude_binary()))
+    if not ai["ready"]:
+        _err(RuntimeError(f"Chat is not set up: {ai['problem']} (Settings → AI)"))
     return await chat.ask(project, sid, text)
 
 
@@ -994,6 +1100,9 @@ async def beautify_start(project: str, sid: str, data: dict = Body(default={})):
     mode = data.get("mode", "update")
     if mode not in ("update", "full", "final"):
         _err(ValueError("Bad mode"))
+    ai = llm_api.status(S.load_settings(), bool(claude_cli.claude_binary()))
+    if not ai["ready"]:
+        _err(RuntimeError(f"Beautify is not set up: {ai['problem']} (Settings → AI)"))
     try:
         return await jobs.start(project, sid, mode)
     except (FileNotFoundError, ValueError, RuntimeError) as e:

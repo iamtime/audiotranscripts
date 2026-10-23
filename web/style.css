@@ -431,6 +431,17 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .toast.download { flex-direction: column; align-items: stretch; gap: 7px; min-width: 300px; }
 .dl-bar { height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--panel) 25%, transparent); overflow: hidden; }
 .dl-bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .6s ease; }
+.ai-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-bottom: 18px; }
+.ai-card { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); }
+.ai-card span { font-size: 12px; color: var(--faint); line-height: 1.35; }
+.ai-card:hover:not(.off) { border-color: var(--accent); }
+.ai-card.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); background: var(--raised); }
+.ai-card.off { opacity: .55; cursor: not-allowed; }
+.ai-card.off a { pointer-events: auto; }
+.ai-api .frow > div { min-width: 0; }
+.ai-note { margin-top: 4px; font-size: 12px; color: var(--faint); }
+.ai-sum { font-size: 13px; padding-top: 5px; }
+.ai-sum.bad { color: var(--rec); }
 @keyframes toastIn { from { opacity: 0; transform: translateY(8px) scale(.97); } }
 
 /* ── Responsive ───────────────────────────────────────────────────────────── */

@@ -29,7 +29,10 @@ DEFAULT_SETTINGS = {
     "beautify_engine": "claude",      # claude (Claude Code CLI) | api (Gemini/OpenAI)
     "beautify_model": "opus",
     "chat_model": "sonnet",
+    "api_provider": "gemini",         # api engine: gemini | openai | anthropic | openrouter | custom (llm_api.py)
     "api_model": "",                  # for the api engine; empty = provider default
+    "api_base_url": "",               # empty = the provider's; required for custom
+    "ai_setup_done": False,           # the first-run AI setup dialog was answered
     "auto_final_beautify": True,      # offer (ask) to build the final version when recording stops
     "engine": "whisper",              # ASR engine: whisper | gigaam | parakeet
     "lang": "auto",

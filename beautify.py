@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 import claude_cli
+import llm_api
 import external
 from sessions import (
     DATA_ROOT, ROOT, beautify_text, latest_version, load_manifest, load_notes, load_project_settings, load_settings, notes_path,
@@ -205,7 +206,8 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
         "v": v, "mode": mode, "status": "running", "created": datetime.now().isoformat(timespec="seconds"),
         "html": out.name, "input": snapshot.name, "lines": len(timed), "t_first": t_first, "t_last": t_last,
         "screenshots": [Path(s["path"]).name for s in shots],
-        "engine": settings["beautify_engine"], "model": settings["beautify_model"],
+        "engine": settings["beautify_engine"],
+        "model": llm_api.config(settings)["model"] if settings["beautify_engine"] == "api" else settings["beautify_model"],
     }
     manifest["versions"].append(record)
     save_manifest(project, sid, manifest)
@@ -290,7 +292,9 @@ def _copy_to_docs(project: str, sid: str, out: Path, rec: dict, manifest: dict) 
 
 # ── API engine (no Claude Code): single-shot generation via Gemini/OpenAI ───
 
-def run_api(spec: dict) -> None:
+def run_api(spec: dict, on_progress=None) -> None:
+    """Single-pass Beautify with an API model (llm_api); on_progress(chars) while it writes."""
+    import llm_api
     import process_transcript2 as pt
     settings = spec["settings"]
     text = spec["input"].read_text(encoding="utf-8", errors="replace")
@@ -305,19 +309,25 @@ def run_api(spec: dict) -> None:
               .replace("Use the exact relative src listed for each screenshot above.",
                        "Use src=\"../../screenshots/<file name>\".")
               .split("8. Output file:")[0])
-    prompt = ("Create a FULL annotated transcript as one self-contained HTML document.\n\n## Requirements"
+    dt = sid_datetime(spec["sid"])
+    prompt = ("Create a FULL annotated transcript as one self-contained HTML document.\n"
+              + (f"Recording date: {dt:%Y-%m-%d} (times in the transcript are local clock times).\n" if dt else "")
+              + "\n## Requirements"
               + prompt + "\nReply with the HTML document only, with no markdown fences.\n\n"
               f"## STYLE REFERENCE (structure/CSS only)\n{spec['style'].read_text(encoding='utf-8')}\n\n"
               f"## SCREENSHOT OCR\n" + ("\n\n".join(ocr_parts) or "(none)") + f"\n\n## RAW TRANSCRIPT\n{text}\n"
               + (f"\n## EXTERNAL TRANSCRIPT OF THE SAME MEETING (reliable speaker names, often wrong terms; "
                  f"use it to attribute speakers, keep our terms and times)\n{ext}" if ext else ""))
-    model = settings.get("api_model") or None
-    provider = pt.detect_provider(model)
+    written = [0]
+
+    def delta(d):
+        written[0] += len(d)
+        if on_progress:
+            on_progress(written[0])
     try:
-        client = pt.make_client(provider)
-    except SystemExit:
-        raise RuntimeError(f"No API key configured for provider '{provider}'")
-    html = pt.generate(client, provider, model or pt.PROVIDER_DEFAULTS[provider], prompt)
+        html = llm_api.stream(llm_api.config(settings), [{"role": "user", "content": prompt}], delta).strip()
+    except Exception as e:
+        raise RuntimeError(llm_api.explain(e)) from e
     if html.startswith("```"):
         html = html.split("\n", 1)[1]
     if html.endswith("```"):
