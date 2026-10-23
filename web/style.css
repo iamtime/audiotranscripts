@@ -104,6 +104,9 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .capture-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; }
 .capture-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 520; }
 .icon-btn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; color: var(--muted); }
+.mi-ai { border-top: 1px solid var(--line); margin-top: 4px; }
+.settings-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; font-size: 13px; font-weight: 560; }
+.settings-btn .ico { width: 16px; height: 16px; }
 .icon-btn:hover { background: var(--panel-2); color: var(--ink); }
 
 /* ── Control strip ────────────────────────────────────────────────────────── */

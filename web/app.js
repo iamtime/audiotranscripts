@@ -1139,8 +1139,10 @@ function openBeautifyMenu(anchor) {
   m.innerHTML = `
     <button class="mi" data-mode="update" ${latest ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Update with new material</div><div class="mi-sub">Extends v${latest ? latest.v : '—'} with new speech and screenshots · fastest</div></span></button>
     <button class="mi" data-mode="full"><span class="mi-main"><div class="mi-title">Full rebuild</div><div class="mi-sub">Regenerates the whole document from the transcript</div></span></button>
-    <button class="mi" data-mode="final" ${finished ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Final version</div><div class="mi-sub">${finished ? 'Definitive document with every speaker identified; also saved to docs/' : 'Available after the recording stops (runs automatically)'}</div></span></button>`;
+    <button class="mi" data-mode="final" ${finished ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Final version</div><div class="mi-sub">${finished ? 'Definitive document with every speaker identified; also saved to docs/' : 'Available after the recording stops (runs automatically)'}</div></span></button>
+    <button class="mi mi-ai" data-ai="1"><span class="mi-main"><div class="mi-title">AI: ${esc(st.ai ? st.ai.label : '—')}</div><div class="mi-sub">Change the provider (Claude Code, Gemini, OpenAI, …), API key, model</div></span></button>`;
   m.onclick = e => {
+    if (e.target.closest('.mi[data-ai]')) { closeMenus(); openAiSetup(); return; }
     const b = e.target.closest('.mi[data-mode]'); if (!b || b.disabled) return;
     closeMenus(); runBeautify(b.dataset.mode);
   };
