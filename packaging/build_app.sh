@@ -59,7 +59,7 @@ else
 fi
 SUFFIX=""
 [[ "$MODELS" != all ]] && SUFFIX="-$MODELS-models"
-rm -rf dist/mac-arm64
+rm -rf dist/mac-arm64 2>/dev/null || { sleep 3; rm -rf dist/mac-arm64; }   # Spotlight may still be scanning the last build
 npx electron-builder --mac dmg --arm64 --publish never "${EXTRA[@]}" \
   "-c.dmg.artifactName=\${productName}-\${version}-\${arch}$SUFFIX.\${ext}"
 ls -lh dist/*.dmg
