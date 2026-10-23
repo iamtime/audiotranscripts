@@ -428,6 +428,9 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .toast { display: flex; align-items: center; gap: 10px; max-width: 420px; padding: 10px 14px; border-radius: 12px; background: var(--ink); color: var(--panel); box-shadow: var(--shadow-pop); font-size: 13px; animation: toastIn .25s cubic-bezier(.2,.9,.3,1.2); }
 .toast.error { background: var(--rec); color: #fff; }
 .toast.ok .ico { color: var(--ok); }
+.toast.download { flex-direction: column; align-items: stretch; gap: 7px; min-width: 300px; }
+.dl-bar { height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--panel) 25%, transparent); overflow: hidden; }
+.dl-bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .6s ease; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(8px) scale(.97); } }
 
 /* ── Responsive ───────────────────────────────────────────────────────────── */

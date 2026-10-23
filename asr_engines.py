@@ -15,6 +15,8 @@ from typing import Iterable
 
 import numpy as np
 
+import downloads
+
 SAMPLE_RATE = 16000
 
 
@@ -51,9 +53,12 @@ class WhisperEngine(AsrEngine):
 
     def __init__(self, model_size: str, device: str, compute_type: str, beam_size: int):
         from faster_whisper import WhisperModel
+        from faster_whisper.utils import _MODELS
         self.label = f"Whisper {model_size}"
         self.beam_size = beam_size
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        repo = model_size if "/" in model_size else _MODELS.get(model_size, "")
+        with downloads.watch_hf(repo, self.label):
+            self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
     def transcribe(self, audio, *, language, word_timestamps, hotwords):
         # Returns faster-whisper's lazy generator unchanged, so segments still stream.
@@ -85,15 +90,17 @@ MAX_WORD_SEC = 0.8      # cap a word's end when the next word starts much later
 class OnnxAsrEngine(AsrEngine):
     def __init__(self, engine: str, model_name: str | None = None, quantization: str | None = "int8"):
         import onnx_asr
+        from onnx_asr.resolver import model_repos
         default_model, label, languages, max_chunk = ONNX_PRESETS[engine]
         self.name = engine
         self.model_name = model_name or default_model
         self.label = f"{label} ({self.model_name}, {quantization or 'fp32'})"
         self.languages = languages
         self.max_chunk_sec = max_chunk
-        self.model = onnx_asr.load_model(
-            self.model_name, quantization=quantization, providers=["CPUExecutionProvider"],
-        ).with_timestamps()
+        with downloads.watch_hf(model_repos.get(self.model_name, self.model_name), label):
+            self.model = onnx_asr.load_model(
+                self.model_name, quantization=quantization, providers=["CPUExecutionProvider"],
+            ).with_timestamps()
 
     def transcribe(self, audio, *, language, word_timestamps, hotwords):
         # language / hotwords: not supported by these models (Parakeet auto-detects).

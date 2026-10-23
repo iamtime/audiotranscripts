@@ -33,6 +33,7 @@ from fastapi.staticfiles import StaticFiles
 
 import beautify
 import claude_cli
+import downloads
 import external
 import select_frames as SF
 import sessions as S
@@ -105,6 +106,7 @@ class Recorder:
         self.engine = ""
         self.diarization = False
         self.error = ""
+        self.download_error = ""   # a model that could not be downloaded (shown instead of the exit code)
         self.entries: list[dict] = []
         self.shots: dict[str, dict] = {}
         self.log: deque[str] = deque(maxlen=400)
@@ -402,6 +404,14 @@ class Recorder:
             self.set_state("finalizing", label)
         elif t == "error":
             hub.emit({"type": "toast", "level": "error", "text": f"{ev.get('where')}: {ev.get('message')}"})
+        elif t == "download":
+            dl = {k: ev.get(k) for k in ("label", "done_mb", "total_mb", "finished", "error")}
+            hub.emit({"type": "download", **dl})
+            if dl.get("error"):
+                self.download_error = f"Could not download {dl['label']}: {dl['error']}"
+            if self.state == "loading" and not dl["finished"]:
+                total = f" of ~{dl['total_mb']:.0f}" if dl.get("total_mb") else ""
+                self.set_state("loading", f"Downloading {dl['label']} (first use): {dl['done_mb']:.0f}{total} MB")
 
     def _emit_shot(self, shot: dict, new: bool = False):
         if not shot.get("deleted"):
@@ -428,7 +438,7 @@ class Recorder:
                 pass
         if rc not in (0, -signal.SIGINT) and self.state not in ("finalizing",):
             tail = "\n".join(list(self.log)[-12:])
-            self.error = f"Recognizer exited with code {rc}"
+            self.error = self.download_error or f"Recognizer exited with code {rc}"
             self.set_state("error", tail)
         else:
             self.set_state("idle", "Session finished")
@@ -736,6 +746,9 @@ chat = ChatManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     S.WEBUI_DIR.mkdir(exist_ok=True)
+    loop = asyncio.get_running_loop()
+    # Models the server itself loads (CLIP for "hide similar") report downloads too.
+    downloads.set_reporter(lambda ev: loop.call_soon_threadsafe(hub.emit, {"type": "download", **ev}))
     yield
     if recorder.active:
         print("Stopping the running recording (finalizing, please wait)...")
@@ -794,7 +807,7 @@ def _err(e: Exception):
 
 @app.get("/api/status")
 async def status():
-    return {"claude": bool(claude_cli.claude_binary()), "helper": HELPER.exists(),
+    return {"claude": bool(claude_cli.claude_binary()), "helper": HELPER.exists(), "models": downloads.engine_models(),
             "settings": S.load_settings(), "recorder": recorder.snapshot()}
 
 

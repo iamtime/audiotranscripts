@@ -4,7 +4,7 @@
 #
 #   packaging/build_app.sh                 # everything bundled, incl. all models (~4 GB DMG)
 #   MODELS=core packaging/build_app.sh     # without Whisper and Parakeet (downloaded on first use)
-#   MODELS=none packaging/build_app.sh     # no models (all downloaded on first use)
+#   MODELS=none packaging/build_app.sh     # only Silero VAD; each model is downloaded on first use (~1 GB DMG)
 #   REBUILD_PYTHON=1 packaging/build_app.sh
 #
 # Signing: with a "Developer ID Application" certificate in the keychain the app is
@@ -21,11 +21,9 @@ if [[ "${REBUILD_PYTHON:-0}" == 1 || ! -x build/python/bin/python3 ]]; then
 fi
 
 # 2. Models
-if [[ "$MODELS" == none ]]; then
-  rm -rf build/models && mkdir -p build/models
-else
-  build/python/bin/python3 packaging/fetch_models.py --set "$MODELS"
-fi
+build/python/bin/python3 packaging/fetch_models.py --set "$MODELS"
+rm -rf build/models
+cp -cR "build/models-$MODELS" build/models
 
 # 3. Screenshot helper (arm64, macOS 14+)
 swiftc -O -target arm64-apple-macos14.0 -o build/screenshot_helper screenshot_helper.swift \
@@ -59,6 +57,9 @@ else
   export VOICE_REC_ADHOC=1
   EXTRA+=(-c.mac.identity=null)
 fi
-rm -rf dist
-npx electron-builder --mac dmg --arm64 --publish never "${EXTRA[@]}"
+SUFFIX=""
+[[ "$MODELS" != all ]] && SUFFIX="-$MODELS-models"
+rm -rf dist/mac-arm64
+npx electron-builder --mac dmg --arm64 --publish never "${EXTRA[@]}" \
+  "-c.dmg.artifactName=\${productName}-\${version}-\${arch}$SUFFIX.\${ext}"
 ls -lh dist/*.dmg

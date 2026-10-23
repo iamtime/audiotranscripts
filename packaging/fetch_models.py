@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Collect the models bundled into the macOS app into build/models/.
 
-    build/python/bin/python3 packaging/fetch_models.py [--set all|core]
+    build/python/bin/python3 packaging/fetch_models.py [--set all|core|none]
 
-Layout (the app copies it into its writable model cache on first launch):
+"none" keeps only Silero VAD (35 MB, needed by every recording); the app then
+downloads each other model the first time it is used (see downloads.py).
+
+Layout of build/models-<set> (the app copies it into its writable model cache on first launch):
     build/models/hf/hub/models--*      Hugging Face cache (HF_HOME=.../hf)
     build/models/torch/hub/snakers4_silero-vad_master   Silero VAD (VOICE_REC_SILERO_DIR)
     build/models/easyocr/model/*.pth   EasyOCR (EASYOCR_MODULE_PATH=.../easyocr)
@@ -20,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parent.parent / "build" / "models"
+BUILD = Path(__file__).resolve().parent.parent / "build"
 HF_REPOS = {   # repo -> set: core models are always bundled, "all" adds the big Whisper / Parakeet
     "istupakov/gigaam-v3-onnx": "core",
     "speechbrain/spkrec-ecapa-voxceleb": "core",
@@ -41,19 +44,22 @@ def clone(src: Path, dst: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--set", choices=("all", "core"), default="all")
+    ap.add_argument("--set", choices=("all", "core", "none"), default="all")
     args = ap.parse_args()
-    repos = [r for r, s in HF_REPOS.items() if args.set == "all" or s == "core"]
+    global OUT
+    OUT = BUILD / f"models-{args.set}"
+    repos = [r for r, s in HF_REPOS.items() if args.set == "all" or (args.set == "core" and s == "core")]
 
     home = Path.home()
     for r in repos:
         name = "models--" + r.replace("/", "--")
         clone(home / ".cache/huggingface/hub" / name, OUT / "hf/hub" / name)
     clone(home / ".cache/torch/hub/snakers4_silero-vad_master", OUT / "torch/hub/snakers4_silero-vad_master")
-    for f in ("craft_mlt_25k.pth", "cyrillic_g2.pth"):
-        clone(home / ".EasyOCR/model" / f, OUT / "easyocr/model" / f)
+    if args.set != "none":
+        for f in ("craft_mlt_25k.pth", "cyrillic_g2.pth"):
+            clone(home / ".EasyOCR/model" / f, OUT / "easyocr/model" / f)
     # A dropped model set must not linger from an earlier build.
-    for d in (OUT / "hf/hub").glob("models--*"):
+    for d in (OUT / "hf/hub").glob("models--*") if (OUT / "hf/hub").exists() else ():
         if d.name.replace("models--", "").replace("--", "/", 1) not in repos:
             print(f"  remove {d}")
             shutil.rmtree(d)
@@ -65,6 +71,10 @@ def main():
     import torch
     print("Silero VAD")
     torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True)
+
+    if args.set == "none":
+        subprocess.run(["du", "-sh", str(OUT)])
+        return
 
     import onnx_asr
     for engine, model in (("gigaam", "gigaam-v3-e2e-rnnt"), ("parakeet", "nemo-parakeet-tdt-0.6b-v3")):

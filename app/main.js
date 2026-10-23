@@ -172,6 +172,8 @@ async function startServer() {
     TORCH_HOME: path.join(models, 'torch'),
     EASYOCR_MODULE_PATH: path.join(models, 'easyocr'),
     HF_HUB_DISABLE_TELEMETRY: '1',
+    // Plain HTTP downloads grow the file as they go, so downloads.py can show progress.
+    HF_HUB_DISABLE_XET: '1',
     TOKENIZERS_PARALLELISM: 'false',
     PYTHONNOUSERSITE: '1',
     PYTHONUNBUFFERED: '1',
@@ -371,7 +373,7 @@ if (!app.requestSingleInstanceLock()) {
       const { response } = await dialog.showMessageBox({
         type: 'question', buttons: ['Move to Applications', 'Not Now'], defaultId: 0, cancelId: 1,
         message: 'Move Voice Rec to the Applications folder?',
-        detail: 'Run from the disk image, Voice Rec has to copy its bundled models (~3 GB) to your disk; from Applications they take no extra space.',
+        detail: 'Run from the disk image, Voice Rec has to copy its bundled models to your disk; from Applications they take no extra space.',
       });
       if (response === 0) {
         try { if (app.moveToApplicationsFolder()) return; } catch (e) { dialog.showErrorBox('Could not move', String(e)); }

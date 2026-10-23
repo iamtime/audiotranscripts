@@ -67,8 +67,10 @@ class ClipFilter(FrameFilter):
             self.torch = torch
             if self.device is None:
                 self.device = "mps" if torch.backends.mps.is_available() else "cpu"
-            self.model = CLIPModel.from_pretrained(self.model_name).to(self.device).eval()
-            self.proc = CLIPProcessor.from_pretrained(self.model_name)
+            import downloads
+            with downloads.watch_hf(self.model_name, "CLIP (picture similarity)"):
+                self.model = CLIPModel.from_pretrained(self.model_name).to(self.device).eval()
+                self.proc = CLIPProcessor.from_pretrained(self.model_name)
             prompts, owners = [], []
             for cls, ps in CLASSES.items():
                 prompts += ps

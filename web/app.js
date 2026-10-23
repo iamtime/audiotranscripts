@@ -84,6 +84,28 @@ function toast(text, level = 'info', ms = 4200, action = null) {
   $('#toasts').appendChild(el);
   setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, ms);
 }
+// Model downloads on first use: one live toast per model, gone when it is done.
+const dlToasts = {};
+function onDownload(m) {
+  let el = dlToasts[m.label];
+  if (m.finished) {
+    if (el) el.remove();
+    delete dlToasts[m.label];
+    if (m.error) toast(`Could not download ${m.label}: ${m.error}`, 'error', 10000);
+    else toast(`${m.label} downloaded`, 'ok');
+    api('GET', '/api/status').then(s => { st.models = s.models; renderAll(); }).catch(() => {});
+    return;
+  }
+  if (!el) {
+    el = dlToasts[m.label] = document.createElement('div');
+    el.className = 'toast download';
+    el.innerHTML = '<div class="dl-text"></div><div class="dl-bar"><i></i></div>';
+    $('#toasts').appendChild(el);
+  }
+  const total = m.total_mb ? ` of ~${fmtMB(m.total_mb)}` : '';
+  el.querySelector('.dl-text').textContent = `Downloading ${m.label} (first use): ${fmtMB(m.done_mb)}${total}`;
+  el.querySelector('.dl-bar i').style.width = m.total_mb ? `${Math.min(99, 100 * m.done_mb / m.total_mb)}%` : '30%';
+}
 const fail = e => toast(e.message || String(e), 'error', 6000);
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -321,7 +343,7 @@ function renderControl() {
       </div>
       <div class="opt-group">
         <div class="opt"><span class="opt-label">Engine</span>
-          <select class="field" id="engSel" title="Speech recognition model">${Object.entries(ENGINES).map(([v, e]) => `<option value="${v}" ${(s.engine || 'whisper') === v ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div>
+          <select class="field" id="engSel" title="Speech recognition model">${Object.entries(ENGINES).map(([v]) => `<option value="${v}" ${(s.engine || 'whisper') === v ? 'selected' : ''}>${esc(engineLabel(v))}</option>`).join('')}</select></div>
         <div class="opt"><span class="opt-label">Language</span>
           <div class="seg" id="langSeg">${['auto', 'en', 'ru'].map(l => `<button data-v="${l}" class="${(s.lang || 'auto') === l ? 'on' : ''}" ${engineBlocksLang(s.engine, l) ? `disabled title="${ENGINES.gigaam.name} recognizes Russian only"` : ''}>${l === 'auto' ? 'Auto' : l.toUpperCase()}</button>`).join('')}</div></div>
         <div class="opt"><span class="opt-label">Speakers</span>
@@ -508,6 +530,12 @@ const ENGINES = {
   whisper: { name: 'Whisper turbo', short: 'WHISPER' },
   gigaam: { name: 'GigaAM v3 (RU)', short: 'GIGAAM', ruOnly: true },
   parakeet: { name: 'Parakeet v3 (RU+EN)', short: 'PARAKEET' },
+};
+// Not downloaded yet (the app can ship without models): say so next to the engine.
+const fmtMB = mb => mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+const engineLabel = v => {
+  const m = st.models && st.models[v];
+  return ENGINES[v].name + (m && !m.cached ? ` · downloads ${fmtMB(m.mb)} on first use` : '');
 };
 const engineBlocksLang = (engine, lang) => !!ENGINES[engine || 'whisper']?.ruOnly && lang === 'en';
 
@@ -1669,6 +1697,7 @@ async function handle(m) {
       if (m.project === st.project) { st.external = { files: m.files, speakers: m.speakers }; renderExternal(); }
       break;
     case 'toast': toast(m.text, m.level || 'info'); break;
+    case 'download': onDownload(m); break;
   }
 }
 
@@ -1919,7 +1948,7 @@ $('#docFrame').addEventListener('load', () => {
 (async function boot() {
   try {
     const s = await api('GET', '/api/status');
-    st.settings = s.settings; st.recorder = s.recorder; st.claude = s.claude;
+    st.settings = s.settings; st.recorder = s.recorder; st.claude = s.claude; st.models = s.models;
     if (s.recorder.pipeline) st.pipeline = s.recorder.pipeline;
     if (!s.helper) toast('screenshot_helper binary is missing — run ./compile.sh', 'error', 8000);
     await loadProjects();

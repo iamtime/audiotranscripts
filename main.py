@@ -19,6 +19,7 @@ import torch
 import easyocr
 
 from asr_engines import ENGINES, create_engine, engine_label
+import downloads
 from events import events
 
 try:
@@ -556,7 +557,13 @@ def finalize_diarization(session_data, output_path, num_speakers, cluster_thresh
 
 def ocr_worker():
     """Daemon thread: OCR screenshots and save text to .txt files."""
-    reader = easyocr.Reader(["ru", "en"], gpu=False, verbose=False)
+    try:
+        with downloads.watch_easyocr():
+            reader = easyocr.Reader(["ru", "en"], gpu=False, verbose=False)
+    except Exception as e:
+        print(f"[OCR] disabled, model failed to load: {e}", file=sys.stderr)
+        events.emit("error", where="OCR", message=f"screenshot text recognition is off: {downloads._explain(e)}")
+        reader = None
     while True:
         try:
             image_path = ocr_queue.get(timeout=0.5)
@@ -570,6 +577,8 @@ def ocr_worker():
         try:
             if not Path(image_path).exists():
                 print(f"[OCR skip] file not found: {image_path}", file=sys.stderr)
+                continue
+            if reader is None:
                 continue
             results = reader.readtext(image_path, detail=0, paragraph=True)
             text = "\n".join(results)
@@ -746,6 +755,7 @@ def main():
     args = parser.parse_args()
     if args.events:
         events.open(args.events)
+        downloads.set_reporter(lambda ev: events.emit("download", **ev))
     global vocab_path
     if args.vocab_file:
         vocab_path = Path(args.vocab_file)

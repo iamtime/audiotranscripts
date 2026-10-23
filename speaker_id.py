@@ -35,10 +35,12 @@ class SpeakerEmbedder:
             from speechbrain.inference.speaker import EncoderClassifier
         except ImportError:
             from speechbrain.pretrained import EncoderClassifier
-        self.model = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb",
-            run_opts={"device": device},
-        )
+        import downloads
+        with downloads.watch_hf("speechbrain/spkrec-ecapa-voxceleb", "Speaker model (ECAPA)"):
+            self.model = EncoderClassifier.from_hparams(
+                source="speechbrain/spkrec-ecapa-voxceleb",
+                run_opts={"device": device},
+            )
 
     def embed(self, audio: np.ndarray) -> np.ndarray:
         """Return L2-normalised 192-dim embedding from float32 mono audio."""
