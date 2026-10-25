@@ -69,6 +69,7 @@ The screenshot helper communicates with Python through stdout: it prints `SCREEN
 - ffmpeg (optional, for MP3 audio export)
 - Screen Recording permission (for screenshots)
 - Accessibility permission (for text selection capture)
+- System Audio Recording permission (only for `--source app...`, macOS 14.2+)
 
 ## Setup
 
@@ -113,6 +114,26 @@ During recording:
 - `Ctrl+Shift+S` -- take a screenshot
 - `Ctrl+Shift+W` -- capture selected text
 - `Ctrl+C` -- stop recording
+
+### Audio source
+
+`--source` (the *Source* list in the web UI) picks what to transcribe:
+
+```bash
+# One app's audio and the microphone as two channels: lines marked [Them] / [Me]
+./build_audio_helper.sh                 # Core Audio process taps, macOS 14.2+
+./audio_helper --list                   # apps connected to Core Audio (bundle ids)
+python main.py myproject 60 --source app+mic:com.microsoft.teams2
+
+# Only the app's audio
+python main.py myproject 60 --source app:com.microsoft.teams2
+
+# An audio file (mp3, m4a, wav, video, ...; ffmpeg, or afconvert as a fallback);
+# timestamps are positions in the file, no screenshots
+python main.py myproject 60 --source file:meeting.m4a
+```
+
+`audio_helper` writes 16 kHz mono float32 to stdout, paced by the wall clock (zeros while the app is silent), so both channels share one timeline. Each channel has its own VAD. With `--speakers`, only `[Them]` lines are diarized. macOS asks for the *System Audio Recording* permission. Teams plays call audio from its `ModuleHost` helper process, which is grouped under the app. The web UI also has a **Cut** button that ends the current phrase without waiting for the pause (`CUT` on `--control-stdin`).
 
 Output is organized per project:
 

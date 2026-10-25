@@ -41,6 +41,8 @@ VAD_THRESHOLD = 0.5
 SILENCE_DURATION_MS = 1500
 MIN_SPEECH_DURATION_MS = 250
 SCREENSHOT_HELPER = Path(__file__).parent / "screenshot_helper"
+AUDIO_HELPER = Path(__file__).parent / "audio_helper"
+APP_CHUNK = 1600            # samples per read from audio_helper (100 ms at 16 kHz)
 BEAM_SIZE = 5
 
 # ── Diarization config ──────────────────────────────────────────────────────
@@ -49,17 +51,21 @@ EMBED_CHUNK_SEC = 3.0      # max phrase duration before forced split (at word bo
 MIN_PHRASE_AUDIO_SEC = 1.0 # min audio duration for reliable speaker embedding
 
 # ── Globals ──────────────────────────────────────────────────────────────────
-audio_queue: queue.Queue[np.ndarray] = queue.Queue()
-transcribe_queue: queue.Queue = queue.Queue()      # items: (t_start, audio)
+audio_queue: queue.Queue[np.ndarray] = queue.Queue()   # main channel (mic, app or file); None = end of input
+app_queue: queue.Queue[np.ndarray] = queue.Queue()     # second channel in app+mic mode (the app)
+transcribe_queue: queue.Queue = queue.Queue()      # items: (t_start, audio, label)
 embed_queue: queue.Queue = queue.Queue()            # items: (t_start, t_end, audio)
 stop_event = threading.Event()
 screenshot_dir: Path | None = None
 ocr_queue: queue.Queue[str] = queue.Queue()
 pending_injections: queue.Queue[str] = queue.Queue()
 audio_chunks: list[np.ndarray] = []
+app_chunks: list[np.ndarray] = []     # app channel in app+mic mode (mixed in when saving audio)
 save_audio_flag = False
 mic_muted = threading.Event()   # set via --control-stdin MUTE/UNMUTE
+cut_requests = 0                # bumped by --control-stdin CUT: end the current phrase now
 live_frames = None   # autoframes.LiveFrames once auto frames are switched on (--auto-frames / AUTO ON)
+channel_rms: dict[str, float] = {}    # last level per channel; the meter shows the loudest
 
 
 def load_models(engine_name="whisper", asr_model=None):
@@ -78,6 +84,12 @@ def load_models(engine_name="whisper", asr_model=None):
 
     print("Loading Silero VAD...")
     events.emit("status", state="loading", detail="Loading Silero VAD")
+    vad_model = load_vad()
+    print("Silero VAD loaded.")
+    return asr_engine, vad_model
+
+
+def load_vad():
     silero_dir = os.environ.get("VOICE_REC_SILERO_DIR")   # bundled copy (macOS app)
     if silero_dir and Path(silero_dir, "hubconf.py").exists():
         vad_model, utils = torch.hub.load(repo_or_dir=silero_dir, model="silero_vad", source="local")
@@ -87,8 +99,7 @@ def load_models(engine_name="whisper", asr_model=None):
             model="silero_vad",
             trust_repo=True,
         )
-    print("Silero VAD loaded.")
-    return asr_engine, vad_model
+    return vad_model
 
 
 def audio_callback(indata, frames, time_info, status):
@@ -101,10 +112,90 @@ def audio_callback(indata, frames, time_info, status):
         # and a phrase in progress ends normally.
         data = np.zeros_like(data)
     audio_queue.put(data)
-    if events.enabled:
-        events.emit_throttled("level", 0.08, "level", rms=float(np.sqrt(np.mean(data * data))))
+    emit_level("mic", data)
     if save_audio_flag:
         audio_chunks.append(data)
+
+
+def emit_level(channel: str, data: np.ndarray):
+    if events.enabled:
+        channel_rms[channel] = float(np.sqrt(np.mean(data * data))) if len(data) else 0.0
+        events.emit_throttled("level", 0.08, "level", rms=max(channel_rms.values()))
+
+
+def app_audio_reader(proc, target_queue, chunks):
+    """Read 16 kHz mono float32 from audio_helper (paced by the wall clock, zeros when the
+    app is silent) and feed it to a VAD channel like the mic callback does."""
+    nbytes = APP_CHUNK * 4
+    while True:
+        raw = proc.stdout.read(nbytes)
+        if not raw or len(raw) < 4:
+            break
+        data = np.frombuffer(raw[: len(raw) // 4 * 4], dtype=np.float32).copy()
+        if mic_muted.is_set():
+            data = np.zeros_like(data)
+        target_queue.put(data)
+        emit_level("app", data)
+        if save_audio_flag:
+            chunks.append(data)
+    if not stop_event.is_set():
+        print(f"\r\033[K[app audio] helper exited (code {proc.poll()})", file=sys.stderr)
+        events.emit("error", where="app audio", message="The app audio capture stopped")
+
+
+def helper_log_reader(proc, prefix):
+    for line in proc.stderr:
+        line = line.decode("utf-8", "replace").strip() if isinstance(line, bytes) else line.strip()
+        if line:
+            print(f"\r\033[K{prefix} {line}")
+            if "zeros" in line or "error" in line:
+                events.emit("error", where="app audio", message=line.removeprefix("[audio_helper] "))
+
+
+def decode_audio_file(path: Path, work_dir: Path) -> np.ndarray:
+    """Any audio (mp3, m4a, wav, ...) → 16 kHz mono float32, via ffmpeg (afconvert as fallback)."""
+    tmp = work_dir / f".decode_{os.getpid()}.raw"
+    try:
+        try:
+            r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(path),
+                                "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le", str(tmp)],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.strip() or f"ffmpeg exited with {r.returncode}")
+            return np.fromfile(tmp, dtype="<f4")
+        except FileNotFoundError:     # no ffmpeg: macOS's own converter (mp3, m4a, aac, wav, aiff, flac)
+            r = subprocess.run(["afconvert", "-f", "WAVE", "-d", f"LEF32@{SAMPLE_RATE}", "-c", "1",
+                                str(path), str(tmp)], capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.strip() or f"afconvert exited with {r.returncode}")
+            data = tmp.read_bytes()
+            pos = 12                  # RIFF header; find the "data" chunk
+            while pos + 8 <= len(data):
+                cid, size = data[pos:pos + 4], int.from_bytes(data[pos + 4:pos + 8], "little")
+                if cid == b"data":
+                    return np.frombuffer(data[pos + 8:pos + 8 + size], dtype="<f4").copy()
+                pos += 8 + size + (size & 1)
+            raise RuntimeError("afconvert produced no audio data")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def file_feeder(audio: np.ndarray):
+    """Feed a decoded file into the VAD as fast as the pipeline takes it, then end the input."""
+    total = len(audio) / SAMPLE_RATE
+    for i in range(0, len(audio), APP_CHUNK):
+        if stop_event.is_set():
+            break
+        # Stay a little ahead of the VAD, and don't run far ahead of the recognizer either.
+        while (audio_queue.qsize() > 50 or transcribe_queue.qsize() > 3) and not stop_event.is_set():
+            stop_event.wait(0.05)
+        chunk = audio[i:i + APP_CHUNK]
+        audio_queue.put(chunk)
+        emit_level("file", chunk)
+        events.emit_throttled("source_progress", 0.5, "source_progress",
+                              done=round(min(total, (i + APP_CHUNK) / SAMPLE_RATE), 1), total=round(total, 1))
+    events.emit("source_progress", done=round(total, 1), total=round(total, 1))
+    audio_queue.put(None)
 
 
 def flush_pending_injections(output_file, session_data):
@@ -231,7 +322,10 @@ def transcription_worker(asr_engine, output_file, session_data, enable_diarizati
             transcribe_queue.task_done()
             break
 
-        seg_t_start, segment_audio = item
+        seg_t_start, segment_audio, label = item
+        tag = f"[{label}] " if label else ""
+        # app+mic mode: only the app channel ("Them") goes to diarization; "Me" is known
+        diarize_this = enable_diarization and label != "Me"
         duration = len(segment_audio) / SAMPLE_RATE
         sys.stdout.write(f"\r\033[K[transcribing {duration:.1f}s...] ")
         sys.stdout.flush()
@@ -242,7 +336,7 @@ def transcription_worker(asr_engine, output_file, session_data, enable_diarizati
             segments = asr_engine.transcribe(
                 segment_audio,
                 language=current_lang,
-                word_timestamps=enable_diarization,
+                word_timestamps=diarize_this,
                 hotwords=current_hotwords() if asr_engine.supports_hotwords else None,
             )
             correct = vocab_correct and vocab_path is not None
@@ -262,8 +356,8 @@ def transcription_worker(asr_engine, output_file, session_data, enable_diarizati
                     text = apply_corrections(text)
                 if text:
                     if first:
-                        sys.stdout.write(f"\r\033[K[{timestamp}] ")
-                        output_file.write(f"[{timestamp}] ")
+                        sys.stdout.write(f"\r\033[K[{timestamp}] {tag}")
+                        output_file.write(f"[{timestamp}] {tag}")
                         first = False
                     sys.stdout.write(text + " ")
                     sys.stdout.flush()
@@ -276,7 +370,7 @@ def transcription_worker(asr_engine, output_file, session_data, enable_diarizati
                                 text=text)
 
                 # Collect word-level data for diarization
-                if enable_diarization and seg.words:
+                if diarize_this and seg.words:
                     for w in seg.words:
                         word_text = w.word.strip()
                         if correct and word_text:
@@ -294,9 +388,11 @@ def transcription_worker(asr_engine, output_file, session_data, enable_diarizati
                 output_file.write("\n")
                 output_file.flush()
                 events.emit("segment", time=timestamp, text=" ".join(seg_texts),
-                            t=round(seg_t_start, 2), duration=round(duration, 1))
+                            t=round(seg_t_start, 2), duration=round(duration, 1), speaker=label)
 
-                if enable_diarization and asr_words:
+                if enable_diarization and not diarize_this:
+                    session_data["fixed"].append((seg_t_start, label, " ".join(seg_texts)))
+                if diarize_this and asr_words:
                     session_data["segments"].append(AsrSegment(
                         t_start=seg_t_start,
                         t_end=seg_t_start + duration,
@@ -386,8 +482,10 @@ def embed_worker(embedder, session_data):
         sys.stdout.flush()
 
 
-def vad_loop(vad_model):
-    """Main-thread VAD loop: detect speech segments and enqueue for transcription."""
+def vad_loop(vad_model, source=audio_queue, label=None):
+    """VAD loop over one channel: detect speech segments and enqueue them for transcription.
+    label marks the channel's lines in app+mic mode ("Me" / "Them"); None otherwise.
+    Runs until stop_event, or until the source yields None (end of an audio file)."""
     vad_chunk_samples = 512  # 32ms at 16kHz
     silence_chunks = int((SILENCE_DURATION_MS / 1000) * SAMPLE_RATE / vad_chunk_samples)
     min_speech_chunks = int((MIN_SPEECH_DURATION_MS / 1000) * SAMPLE_RATE / vad_chunk_samples)
@@ -401,14 +499,17 @@ def vad_loop(vad_model):
     # Sample-accurate timing
     samples_processed = 0
     speech_start_sample = 0
+    cut_seen = cut_requests
 
     while not stop_event.is_set():
         # Drain audio_queue into buffer
         try:
-            chunk = audio_queue.get(timeout=0.1)
-            buffer = np.concatenate([buffer, chunk])
+            chunk = source.get(timeout=0.1)
         except queue.Empty:
             continue
+        if chunk is None:
+            break
+        buffer = np.concatenate([buffer, chunk])
 
         # Process all complete VAD windows
         while len(buffer) >= vad_chunk_samples:
@@ -436,34 +537,36 @@ def vad_loop(vad_model):
                 sys.stdout.write(f"\r\033[K● speech [{duration:.1f}s]")
                 sys.stdout.flush()
                 events.emit_throttled("speech", 0.25, "speech", duration=round(duration, 1))
-            else:
-                if is_speaking:
-                    silent_count += 1
-                    speech_buffer = np.concatenate([speech_buffer, window])
+            elif is_speaking:
+                silent_count += 1
+                speech_buffer = np.concatenate([speech_buffer, window])
 
-                    # Re-read each window so the pause can be changed while recording
-                    silence_chunks = int((SILENCE_DURATION_MS / 1000) * SAMPLE_RATE / vad_chunk_samples)
-                    if silent_count >= silence_chunks:
-                        sys.stdout.write("\r\033[K")
-                        sys.stdout.flush()
-                        # End of speech segment
-                        queued = speech_count >= min_speech_chunks
-                        t_start = speech_start_sample / SAMPLE_RATE
-                        if queued:
-                            transcribe_queue.put((t_start, speech_buffer.copy()))
-                        events.emit("speech_end", queued=queued, t=round(t_start, 2),
-                                    duration=round(len(speech_buffer) / SAMPLE_RATE, 1))
-                        speech_buffer = np.array([], dtype=np.float32)
-                        is_speaking = False
-                        silent_count = 0
-                        speech_count = 0
+            # Re-read each window so the pause can be changed while recording
+            silence_chunks = int((SILENCE_DURATION_MS / 1000) * SAMPLE_RATE / vad_chunk_samples)
+            # CUT ends the phrase right away instead of waiting for the pause
+            cut = cut_requests != cut_seen
+            cut_seen = cut_requests
+            if is_speaking and (cut or silent_count >= silence_chunks):
+                sys.stdout.write("\r\033[K")
+                sys.stdout.flush()
+                # End of speech segment
+                queued = speech_count >= min_speech_chunks
+                t_start = speech_start_sample / SAMPLE_RATE
+                if queued:
+                    transcribe_queue.put((t_start, speech_buffer.copy(), label))
+                events.emit("speech_end", queued=queued, t=round(t_start, 2),
+                            duration=round(len(speech_buffer) / SAMPLE_RATE, 1), cut=cut)
+                speech_buffer = np.array([], dtype=np.float32)
+                is_speaking = False
+                silent_count = 0
+                speech_count = 0
 
     # Flush remaining speech buffer on shutdown
     if len(speech_buffer) > 0 and speech_count >= min_speech_chunks:
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
         t_start = speech_start_sample / SAMPLE_RATE
-        transcribe_queue.put((t_start, speech_buffer.copy()))
+        transcribe_queue.put((t_start, speech_buffer.copy(), label))
         events.emit("speech_end", queued=True, t=round(t_start, 2),
                     duration=round(len(speech_buffer) / SAMPLE_RATE, 1))
 
@@ -526,6 +629,10 @@ def finalize_diarization(session_data, output_path, num_speakers, cluster_thresh
     text = " ".join(w.text for w in current_words)
     items.append(("speech", current_t, current_speaker, text))
 
+    # Lines whose speaker is known without clustering (app+mic mode: "Me")
+    for t_rel, label, content in session_data.get("fixed", []):
+        items.append(("speech", t_rel, label, content))
+
     # Add injection markers (screenshots, selections)
     for t_rel, marker in injections:
         items.append(("injection", t_rel, 0, marker))
@@ -539,7 +646,8 @@ def finalize_diarization(session_data, output_path, num_speakers, cluster_thresh
         wall = start_time + timedelta(seconds=t)
         time_str = wall.strftime("%H:%M:%S")
         if kind == "speech":
-            lines.append(f"[{time_str}] [Speaker {speaker}] {content}")
+            lines.append(f"[{time_str}] [{speaker}] {content}" if isinstance(speaker, str)
+                         else f"[{time_str}] [Speaker {speaker}] {content}")
         else:
             lines.append(f"[{time_str}] {content}")
 
@@ -555,11 +663,24 @@ def finalize_diarization(session_data, output_path, num_speakers, cluster_thresh
     events.emit("diarization", state="done", speakers=n_speakers, path=str(output_path))
 
 
+def _cpu_lacks_avx2() -> bool:
+    """x86_64 without AVX2 (e.g. the Intel build under Rosetta): PyTorch's quantized kernels
+    (fbgemm) would crash with an illegal instruction."""
+    import platform
+    if platform.machine() != "x86_64":
+        return False
+    try:
+        out = subprocess.run(["sysctl", "-n", "hw.optional.avx2_0"], capture_output=True, text=True).stdout
+        return out.strip() != "1"
+    except OSError:
+        return True
+
+
 def ocr_worker():
     """Daemon thread: OCR screenshots and save text to .txt files."""
     try:
         with downloads.watch_easyocr():
-            reader = easyocr.Reader(["ru", "en"], gpu=False, verbose=False)
+            reader = easyocr.Reader(["ru", "en"], gpu=False, verbose=False, quantize=not _cpu_lacks_avx2())
     except Exception as e:
         print(f"[OCR] disabled, model failed to load: {e}", file=sys.stderr)
         events.emit("error", where="OCR", message=f"screenshot text recognition is off: {downloads._explain(e)}")
@@ -660,17 +781,23 @@ def shift_session_times(data, delta):
         win.t_start += delta
         win.t_end += delta
     data["injections"] = [(t + delta, m) for t, m in data["injections"]]
+    data["fixed"] = [(t + delta, lbl, txt) for t, lbl, txt in data.get("fixed", [])]
 
 
 def save_audio_recording(project_dir: Path, timestamp: str):
     """Save recorded audio chunks as MP3 (falls back to WAV if ffmpeg unavailable)."""
     import wave
 
-    if not audio_chunks:
+    if not audio_chunks and not app_chunks:
         print("[audio] No audio recorded.")
         return
 
-    audio = np.concatenate(audio_chunks)
+    audio = np.concatenate(audio_chunks) if audio_chunks else np.zeros(0, dtype=np.float32)
+    if app_chunks:      # app+mic mode: mix the two channels
+        app = np.concatenate(app_chunks)
+        n = max(len(audio), len(app))
+        audio = np.pad(audio, (0, n - len(audio))) + np.pad(app, (0, n - len(app)))
+        audio = np.clip(audio, -1.0, 1.0)
     duration = len(audio) / SAMPLE_RATE
     print(f"[audio] Saving {duration:.1f}s of audio...")
 
@@ -729,7 +856,8 @@ def main():
     parser.add_argument("--events", default=None,
                         help="Write structured JSON-lines events to this file")
     parser.add_argument("--control-stdin", action="store_true",
-                        help="Accept commands on stdin: SNAP, STOP, PAUSE <sec>, MUTE, UNMUTE")
+                        help="Accept commands on stdin: SNAP, STOP, PAUSE <sec>, MUTE, UNMUTE, CUT "
+                             "(end the current phrase now), AUTO ON/OFF")
     parser.add_argument("--capture-config", default=None,
                         help="JSON capture config for the screenshot helper (area / window)")
     parser.add_argument("--continue-session", default=None, metavar="TIMESTAMP",
@@ -752,7 +880,23 @@ def main():
     parser.add_argument("--vocab-correct", action="store_true",
                         help='Replace "heard" phrases from --vocab-file with the "meant" ones in the output '
                              "(useful with gigaam/parakeet, which have no hotwords)")
+    parser.add_argument("--source", default="mic", metavar="SOURCE",
+                        help="What to transcribe: mic (default); app:<bundle-id> — one app's audio, e.g. "
+                             "app:com.microsoft.teams2 (macOS 14.2+); app+mic:<bundle-id> — the app and the "
+                             "microphone, lines marked [Them] / [Me]; file:<path> — an audio file (mp3, m4a, "
+                             "wav, ...), timestamps are positions in the file. See audio_helper --list")
     args = parser.parse_args()
+    source_kind, _, source_arg = args.source.partition(":")
+    if source_kind not in ("mic", "app", "app+mic", "file") or (source_kind != "mic" and not source_arg):
+        print(f"--source: expected mic, app:<bundle-id>, app+mic:<bundle-id> or file:<path>, got {args.source!r}",
+              file=sys.stderr)
+        sys.exit(1)
+    if source_kind in ("app", "app+mic") and not AUDIO_HELPER.exists():
+        print(f"App audio needs {AUDIO_HELPER.name} (build it with ./build_audio_helper.sh)", file=sys.stderr)
+        sys.exit(1)
+    if source_kind == "file" and not Path(source_arg).is_file():
+        print(f"Audio file not found: {source_arg}", file=sys.stderr)
+        sys.exit(1)
     if args.events:
         events.open(args.events)
         downloads.set_reporter(lambda ev: events.emit("download", **ev))
@@ -813,15 +957,18 @@ def main():
 
     # Shared session state
     session_data = {
-        "start_time": datetime.now(),
+        # An audio file's timestamps are positions in the file (00:00:00 = its start).
+        "start_time": datetime.combine(datetime.now().date(), datetime.min.time())
+        if source_kind == "file" else datetime.now(),
         "segments": [],     # list[AsrSegment]  — filled by transcription_worker
         "windows": [],      # list[EmbeddingWindow] — filled by embed_worker
         "injections": [],   # list[(t_relative, marker_text)]
+        "fixed": [],        # list[(t_relative, label, text)] — lines with a known speaker ("Me")
     }
     events.emit("session", project=args.project, project_dir=str(project_dir.resolve()),
                 transcript_path=str(output_path.resolve()), timestamp=timestamp,
                 start_time=session_data["start_time"].isoformat(),
-                diarization=enable_diarization, continued=prefix_text is not None)
+                diarization=enable_diarization, continued=prefix_text is not None, source=args.source)
 
     asr_engine, vad_model = load_models(args.engine, args.asr_model)
     if args.vocab_file and not asr_engine.supports_hotwords and not args.vocab_correct:
@@ -878,31 +1025,62 @@ def main():
     ocr_thread = threading.Thread(target=ocr_worker, daemon=True)
     ocr_thread.start()
 
-    # Start audio stream
-    stream = sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        blocksize=1600,  # 100ms blocks
-        callback=audio_callback,
-    )
-    stream.start()
+    # Audio sources. The main channel runs vad_loop on this thread; in app+mic mode the
+    # app gets a second channel (own VAD, own thread) and lines are marked Me / Them.
+    dual = source_kind == "app+mic"
+    main_label = "Me" if dual else None
+    stream = None
+    app_proc = None
+    app_vad_thread = None
+    file_audio = None
+    if source_kind == "file":
+        print(f"Decoding {source_arg}...")
+        events.emit("status", state="loading", detail="Decoding the audio file")
+        try:
+            file_audio = decode_audio_file(Path(source_arg), project_dir)
+        except Exception as e:
+            print(f"Could not read the audio file: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Audio file: {len(file_audio) / SAMPLE_RATE / 60:.1f} min")
+    if source_kind in ("mic", "app+mic"):
+        stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=1600,  # 100ms blocks
+            callback=audio_callback,
+        )
+        stream.start()
+    if source_kind in ("app", "app+mic"):
+        app_proc = subprocess.Popen([str(AUDIO_HELPER), "--capture", source_arg],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        threading.Thread(target=helper_log_reader, args=(app_proc, "[app audio]"), daemon=True).start()
+        threading.Thread(target=app_audio_reader,
+                         args=(app_proc, app_queue if dual else audio_queue, app_chunks if dual else audio_chunks),
+                         daemon=True).start()
+        if dual:
+            app_vad_thread = threading.Thread(target=vad_loop, args=(load_vad(), app_queue, "Them"), daemon=True)
+            app_vad_thread.start()
+    if file_audio is not None:
+        threading.Thread(target=file_feeder, args=(file_audio,), daemon=True).start()
 
-    # Start native screenshot helper
-    helper_cmd = [str(SCREENSHOT_HELPER), str(screenshot_dir.resolve())]
-    if args.capture_config:
-        helper_cmd.append(str(Path(args.capture_config).resolve()))
-    screenshot_proc = subprocess.Popen(
-        helper_cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    helper_thread = threading.Thread(
-        target=helper_reader, args=(screenshot_proc,), daemon=True
-    )
-    helper_thread.start()
+    # Start native screenshot helper (not for audio files: nothing on screen belongs to them)
+    screenshot_proc = None
+    if source_kind != "file":
+        helper_cmd = [str(SCREENSHOT_HELPER), str(screenshot_dir.resolve())]
+        if args.capture_config:
+            helper_cmd.append(str(Path(args.capture_config).resolve()))
+        screenshot_proc = subprocess.Popen(
+            helper_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        helper_thread = threading.Thread(
+            target=helper_reader, args=(screenshot_proc,), daemon=True
+        )
+        helper_thread.start()
 
     frames_dir = project_dir / "frames" / timestamp
     frames_interval = args.auto_frames or 1.0
@@ -910,6 +1088,8 @@ def main():
 
     def set_auto_frames(on: bool):
         global live_frames
+        if screenshot_proc is None:
+            return
         with frames_lock:
             if on and live_frames is None:
                 live_frames = start_live_frames(frames_dir, session_data["start_time"],
@@ -930,6 +1110,8 @@ def main():
             for line in sys.stdin:
                 cmd = line.strip().upper()
                 if cmd == "SNAP":
+                    if screenshot_proc is None:
+                        continue
                     try:
                         screenshot_proc.stdin.write("SNAP\n")
                         screenshot_proc.stdin.flush()
@@ -950,6 +1132,9 @@ def main():
                         mic_muted.clear()
                     print(f"\r\033[K[mic] {'muted' if cmd == 'MUTE' else 'live'}")
                     events.emit("muted", muted=cmd == "MUTE")
+                elif cmd == "CUT":
+                    global cut_requests
+                    cut_requests += 1
                 elif cmd in ("AUTO ON", "AUTO OFF"):
                     set_auto_frames(cmd == "AUTO ON")
                 elif cmd == "STOP":
@@ -964,24 +1149,38 @@ def main():
         stop_event.set(),
     ))
     auto_stop_timer.daemon = True
-    auto_stop_timer.start()
+    if source_kind != "file":
+        auto_stop_timer.start()
 
-    print(f"Listening on default microphone (auto-stop in {args.minutes} min, Ctrl+C to stop early)...")
-    print(f"Ctrl+Shift+S: screenshot, Ctrl+Shift+W: selection")
-    events.emit("status", state="listening", engine=args.engine)
+    what = {"mic": "default microphone", "app": f"app audio of {source_arg}",
+            "app+mic": f"app audio of {source_arg} [Them] + default microphone [Me]",
+            "file": f"audio file {Path(source_arg).name}"}[source_kind]
+    if source_kind == "file":
+        print(f"Transcribing {what} (Ctrl+C to stop early)...")
+    else:
+        print(f"Listening on {what} (auto-stop in {args.minutes} min, Ctrl+C to stop early)...")
+        print(f"Ctrl+Shift+S: screenshot, Ctrl+Shift+W: selection")
+    events.emit("status", state="listening", engine=args.engine, source=args.source)
 
     try:
-        vad_loop(vad_model)
+        vad_loop(vad_model, audio_queue, main_label)
     finally:
+        stop_event.set()        # the audio file ended, or a stop was requested
         auto_stop_timer.cancel()
-        screenshot_proc.terminate()
+        if screenshot_proc is not None:
+            screenshot_proc.terminate()
+        if app_proc is not None:
+            app_proc.terminate()
+        if app_vad_thread is not None:
+            app_vad_thread.join(timeout=5)    # its last phrase must be queued before the sentinel
         if live_frames is not None:
             live_frames.close()
             print(f"[frames] {len(live_frames.store.scenes)} scene(s): {live_frames.store.json_path}")
         for leftover in (screenshot_dir / ".frames").glob("frame_*.jpg"):
             leftover.unlink(missing_ok=True)
-        stream.stop()
-        stream.close()
+        if stream is not None:
+            stream.stop()
+            stream.close()
         events.emit("status", state="finalizing", detail="Transcribing remaining speech")
         # Signal workers to finish (sentinel after all real items)
         transcribe_queue.put(None)
@@ -1028,6 +1227,7 @@ def main():
                         "segments": prev["segments"] + session_data["segments"],
                         "windows": prev["windows"] + session_data["windows"],
                         "injections": prev["injections"] + session_data["injections"],
+                        "fixed": prev.get("fixed", []) + session_data["fixed"],
                     }
                 else:
                     # Earlier part has no speaker data: keep it as is, diarize only the new part.
@@ -1038,6 +1238,7 @@ def main():
                     "segments": diar_data["segments"],
                     "windows": diar_data["windows"],
                     "injections": diar_data["injections"],
+                    "fixed": diar_data["fixed"],
                     "transcript_path": str(output_path),
                 }, f)
             print(f"Session data saved: {session_path}")

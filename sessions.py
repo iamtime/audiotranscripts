@@ -21,6 +21,7 @@ WEBUI_DIR = DATA_ROOT / ".webui"
 
 LINE_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s?(.*)$")
 SPEAKER_RE = re.compile(r"^\[Speaker (\d+)\]\s?(.*)$", re.S)
+CHANNEL_RE = re.compile(r"^\[(Me|Them)\]\s?(.*)$", re.S)   # app+mic recordings: mic / the app
 SHOT_RE = re.compile(r"^\[screenshot: (.+)\]$")
 SEL_RE = re.compile(r"^\[selection: (.*)\]$", re.S)
 SHOT_NAME_RE = re.compile(r"(?:screenshot|frame)_(\d{8})_(\d{6})")
@@ -41,6 +42,8 @@ DEFAULT_SETTINGS = {
     "pause": 1.5,
     "save_audio": False,
     "auto_frames": False,             # automatic screen frames (autoframes.py) from the start
+    "source": "mic",                  # what to transcribe: mic | app+mic | app | file (main.py --source)
+    "source_app": "",                 # bundle id of the app for app / app+mic
     "frames_l1": True,                # auto frames Level 1 (frames_l1.py, CLIP); off = Level 0 only
     "recorder_python": "",            # empty = same interpreter as server.py
     "last_project": "",
@@ -254,9 +257,13 @@ def parse_transcript(text: str) -> list[dict]:
         time, body = m.group(1), m.group(2).rstrip()
         entry = {"time": time, "kind": "speech", "speaker": None, "text": body}
         sm = SPEAKER_RE.match(body)
+        cm = CHANNEL_RE.match(body)
         if sm:
             entry["speaker"] = int(sm.group(1))
             entry["text"] = sm.group(2)
+        elif cm:
+            entry["speaker"] = cm.group(1)
+            entry["text"] = cm.group(2)
         elif SHOT_RE.match(body):
             entry["kind"] = "screenshot"
             entry["path"] = SHOT_RE.match(body).group(1)

@@ -149,6 +149,9 @@ def build_diarized_lines(data, num_speakers, cluster_threshold):
     text = " ".join(w.text for w in current_words)
     items.append(("speech", current_t, current_speaker, text))
 
+    for t_rel, label, content in data.get("fixed", []):   # app+mic mode: "Me" lines
+        items.append(("speech", t_rel, label, content))
+
     for t_rel, marker in injections:
         items.append(("injection", t_rel, 0, marker))
 
@@ -159,7 +162,8 @@ def build_diarized_lines(data, num_speakers, cluster_threshold):
         wall = start_time + timedelta(seconds=t)
         time_str = wall.strftime("%H:%M:%S")
         if kind == "speech":
-            lines.append(f"[{time_str}] [Speaker {speaker}] {content}")
+            lines.append(f"[{time_str}] [{speaker}] {content}" if isinstance(speaker, str)
+                         else f"[{time_str}] [Speaker {speaker}] {content}")
         else:
             lines.append(f"[{time_str}] {content}")
 

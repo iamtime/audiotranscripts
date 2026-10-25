@@ -1,0 +1,8 @@
+# Intel Macs (ARCH=x64 packaging/build_app.sh): PyTorch stopped publishing macOS x86_64
+# wheels after 2.2.2, ONNX Runtime after 1.23.2. Everything else as in requirements-app.txt.
+torch==2.2.2
+torchaudio==2.2.2
+torchvision==0.17.2
+onnxruntime==1.23.2
+# speechbrain 1.1 needs torch.amp.custom_fwd (torch 2.4+); 1.0.3 works with 2.2
+speechbrain==1.0.3

@@ -12,6 +12,10 @@ from pathlib import Path
 
 
 def claude_binary() -> str | None:
+    # The macOS app passes the one the login shell resolves (it may be an alias).
+    pinned = os.environ.get("VOICE_REC_CLAUDE")
+    if pinned and os.access(pinned, os.X_OK):
+        return pinned
     found = shutil.which("claude")
     if found:
         return found

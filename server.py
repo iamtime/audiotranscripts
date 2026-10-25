@@ -45,6 +45,8 @@ ROOT = S.ROOT
 WEB_DIR = ROOT / "web"
 HELPER = ROOT / "screenshot_helper"
 CAPTURE_CONFIG = S.WEBUI_DIR / "capture.json"
+AUDIO_HELPER = ROOT / "audio_helper"     # app audio capture (audio_helper.swift)
+SOURCES = ("mic", "app+mic", "app", "file")   # main.py --source kinds
 CAPTURE_PREVIEW = S.WEBUI_DIR / "capture_preview.png"
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 NOISY_LOG = ("● speech", "[transcribing", "[embedding]")
@@ -117,6 +119,7 @@ class Recorder:
         self.muted = False
         self.auto_frames = False
         self.frame_stats: dict = {}
+        self.source_progress: dict | None = None    # audio file: {"done": sec, "total": sec}
         self.session_start: datetime | None = None
         # speech = seconds of the phrase being recorded (None = silence);
         # current = chunk Whisper is working on; pending = chunks waiting in the queue
@@ -134,6 +137,8 @@ class Recorder:
             "activity": self.activity, "options": self.options, "pipeline": self.pipeline,
             "muted": self.muted, "auto_frames": self.auto_frames, "frame_stats": self.frame_stats,
             "minutes": self.options.get("minutes"),
+            "source": self.options.get("source") or "mic", "source_app": self.options.get("source_app") or "",
+            "source_name": self.options.get("source_name") or "", "source_progress": self.source_progress,
         }
 
     def live_session(self) -> dict:
@@ -191,6 +196,20 @@ class Recorder:
             cmd += ["--auto-frames", "1"]
         if not settings.get("frames_l1", True):
             cmd.append("--no-frames-l1")
+        source = str(opts.get("source") or "mic")
+        if source not in SOURCES:
+            raise HTTPException(400, f"Unknown source: {source}")
+        if source in ("app", "app+mic"):
+            app_id = str(opts.get("source_app") or "").strip()
+            if not app_id:
+                raise HTTPException(400, "Pick the app whose audio to transcribe")
+            if not AUDIO_HELPER.exists():
+                raise HTTPException(400, "App audio needs audio_helper (run ./build_audio_helper.sh)")
+            cmd += ["--source", f"{source}:{app_id}"]
+        elif source == "file":
+            path = audio_file_path(project, str(opts.get("source_file") or ""))
+            cmd += ["--source", f"file:{path}"]
+            opts["continue_sid"] = ""        # a file's timestamps start at 00:00:00: always a new session
         continue_sid = (opts.get("continue_sid") or "").strip()
         if continue_sid:
             if not S.transcript_path(project, continue_sid).exists():
@@ -210,7 +229,8 @@ class Recorder:
             stderr=asyncio.subprocess.STDOUT, start_new_session=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1"}, limit=STREAM_LIMIT)
         S.save_settings({"last_project": project, **{k: opts[k] for k in
-                         ("engine", "lang", "speakers", "minutes", "pause", "save_audio", "auto_frames")
+                         ("engine", "lang", "speakers", "minutes", "pause", "save_audio", "auto_frames",
+                          "source", "source_app")
                          if k in opts}})
         self.set_state("loading", "Starting recognizer")
         loop = asyncio.get_running_loop()
@@ -308,6 +328,13 @@ class Recorder:
         self.proc.stdin.write(b"MUTE\n" if muted else b"UNMUTE\n")
         await self.proc.stdin.drain()
 
+    async def cut(self):
+        """End the phrase being recorded now instead of waiting for the pause."""
+        if not self.active or self.state != "listening":
+            raise HTTPException(409, "Not recording")
+        self.proc.stdin.write(b"CUT\n")
+        await self.proc.stdin.drain()
+
     async def set_auto_frames(self, on: bool):
         if not self.active or self.state != "listening":
             raise HTTPException(409, "Not recording")
@@ -357,11 +384,14 @@ class Recorder:
             self._pipeline(t, ev)
         elif t == "segment_empty":
             pass
+        elif t == "source_progress":
+            self.source_progress = {"done": ev.get("done", 0), "total": ev.get("total", 0)}
+            hub.emit({"type": "source_progress", **self.source_progress})
         elif t == "muted":
             self.muted = bool(ev.get("muted"))
             hub.emit({"type": "recorder", **self.snapshot()})
         elif t == "segment":
-            entry = {"time": ev["time"], "kind": "speech", "speaker": None, "text": ev["text"]}
+            entry = {"time": ev["time"], "kind": "speech", "speaker": ev.get("speaker"), "text": ev["text"]}
             self._add_entry(entry)
         elif t == "injection":
             if ev.get("kind") == "screenshot":
@@ -902,6 +932,26 @@ async def ai_set(data: dict = Body(...)):
     return await ai_get()
 
 
+@app.post("/api/ai/test-claude")
+async def ai_test_claude():
+    """Run a tiny `claude -p` exactly as Beautify does, and report what it says."""
+    exe = claude_cli.claude_binary()
+    if not exe:
+        return {"ok": False, "error": "Claude Code (the claude CLI) is not installed"}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            exe, "-p", "Reply with exactly: OK", "--model", "haiku", cwd=str(S.DATA_ROOT),
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), 90)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"ok": False, "error": "No answer in 90 s", "path": exe}
+    text = out.decode("utf-8", "replace").strip()
+    if proc.returncode == 0 and text:
+        return {"ok": True, "reply": text[:60], "path": exe}
+    return {"ok": False, "error": text[-400:] or f"exit code {proc.returncode}", "path": exe}
+
+
 @app.post("/api/ai/test")
 async def ai_test(data: dict = Body(...)):
     provider = data.get("provider") or "gemini"
@@ -1043,6 +1093,76 @@ def _external_state(project: str) -> dict:
     return {"files": files, "speakers": list(dict.fromkeys(names))}
 
 
+# ── Audio sources: apps playing audio, uploaded audio files ─────────────────
+
+@app.get("/api/audio/apps")
+async def audio_apps():
+    """Apps connected to Core Audio (audio_helper --list), the ones playing sound first."""
+    if not AUDIO_HELPER.exists():
+        return {"available": False, "apps": [], "error": "audio_helper is not built (./build_audio_helper.sh)"}
+    try:
+        proc = await asyncio.create_subprocess_exec(str(AUDIO_HELPER), "--list", stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.PIPE)
+        out, err = await asyncio.wait_for(proc.communicate(), 10)
+        if proc.returncode != 0:
+            raise RuntimeError(err.decode(errors="replace").strip() or f"exit code {proc.returncode}")
+        apps = [a for a in json.loads(out) if not a["bundle"].startswith(("com.voicerec", "com.github.Electron"))]
+        return {"available": True, "apps": apps, "error": ""}
+    except Exception as e:
+        return {"available": False, "apps": [], "error": str(e)}
+
+
+AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".opus", ".aif", ".aiff", ".caf",
+              ".wma", ".webm", ".mp4", ".mov", ".mkv"}
+
+
+def audio_dir(project: str) -> Path:
+    return S.project_dir(project) / "audio"
+
+
+def audio_file_path(project: str, name: str) -> Path:
+    path = audio_dir(project) / Path(name).name
+    if not name or name != path.name or name.startswith(".") or not path.is_file():
+        raise HTTPException(404, f"Audio file not found: {name}")
+    return path.resolve()
+
+
+def _audio_files(project: str) -> list[dict]:
+    d = audio_dir(project)
+    files = [p for p in d.iterdir() if p.is_file() and not p.name.startswith(".")] if d.is_dir() else []
+    return [{"name": p.name, "size": p.stat().st_size, "mtime": p.stat().st_mtime}
+            for p in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)]
+
+
+@app.get("/api/projects/{project}/audio")
+async def audio_list(project: str):
+    return {"files": _audio_files(project)}
+
+
+@app.put("/api/projects/{project}/audio")
+async def audio_upload(project: str, request: Request, name: str):
+    """Store an audio file to transcribe (body = the file) in projects/<p>/audio/."""
+    stem, ext = Path(name).stem, Path(name).suffix.lower()
+    if ext not in AUDIO_EXTS:
+        _err(ValueError(f"Not an audio file this app can read: {name}"))
+    clean = re.sub(r"[^\w.\- ]+", "_", stem).strip(" ._") or "audio"
+    d = audio_dir(project)
+    d.mkdir(parents=True, exist_ok=True)
+    path, n = d / f"{clean}{ext}", 1
+    while path.exists():
+        n += 1
+        path = d / f"{clean} ({n}){ext}"
+    tmp = path.with_name("." + path.name + ".part")
+    try:
+        with open(tmp, "wb") as f:
+            async for chunk in request.stream():
+                f.write(chunk)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"name": path.name, "files": _audio_files(project)}
+
+
 @app.get("/api/projects/{project}/external")
 async def external_list(project: str):
     return _external_state(project)
@@ -1146,6 +1266,12 @@ async def record_pause(data: dict = Body(...)):
 @app.post("/api/record/mute")
 async def record_mute(data: dict = Body(...)):
     await recorder.set_muted(bool(data.get("muted")))
+    return {"ok": True}
+
+
+@app.post("/api/record/cut")
+async def record_cut():
+    await recorder.cut()
     return {"ok": True}
 
 
