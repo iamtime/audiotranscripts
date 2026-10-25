@@ -68,17 +68,34 @@ function splashStatus(text) {
 
 // ── Environment ─────────────────────────────────────────────────────────────
 
-// Apps started from Finder get a bare PATH; take the login shell's, so the
-// Claude Code CLI (Beautify, chat), Ollama etc. are found as in Terminal.
-function loginShellPath() {
-  try {
-    const out = execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', 'printf "__P__%s__P__" "$PATH"'],
-      { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const m = out.match(/__P__(.*)__P__/);
-    if (m && m[1]) return m[1];
-  } catch { /* fall through */ }
-  return ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'),
+// Apps started from Finder get a bare environment. Take the login shell's — PATH,
+// and also whatever ~/.zshrc exports for the Claude Code CLI (ANTHROPIC_API_KEY,
+// CLAUDE_CODE_USE_BEDROCK, CLAUDE_CONFIG_DIR, proxies, …) — so Beautify and chat
+// run `claude` exactly as in Terminal. Also resolve `claude` the way the shell
+// does: an alias (e.g. to ~/.claude/local/claude) is invisible on PATH.
+const SHELL_ENV_SKIP = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'TERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION',
+  'TERM_SESSION_ID', 'PYTHONHOME', 'PYTHONPATH', 'ELECTRON_RUN_AS_NODE']);
+function loginShell() {
+  const fallbackPath = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'),
     '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':');
+  try {
+    const out = execFileSync(process.env.SHELL || '/bin/zsh',
+      ['-ilc', 'printf "__C__%s__C__" "$(command -v claude 2>/dev/null)"; printf "__E__"; /usr/bin/env -0'],
+      { timeout: 8000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 << 20 });
+    const env = {};
+    const at = out.indexOf('__E__');
+    for (const kv of (at >= 0 ? out.slice(at + 5) : '').split('\0')) {
+      const i = kv.indexOf('=');
+      if (i > 0 && !SHELL_ENV_SKIP.has(kv.slice(0, i))) env[kv.slice(0, i)] = kv.slice(i + 1);
+    }
+    let claude = ((out.match(/__C__([\s\S]*?)__C__/) || [])[1] || '').trim();
+    const alias = claude.match(/^(?:alias )?claude=(['"]?)(.+)\1$/);
+    if (alias) claude = alias[2].trim().split(/\s+/)[0].replace(/^~(?=\/)/, os.homedir());
+    if (!claude.startsWith('/')) claude = '';
+    return { env, path: env.PATH || fallbackPath, claude };
+  } catch {
+    return { env: {}, path: fallbackPath, claude: '' };
+  }
 }
 
 // Files of an app downloaded from the internet carry the quarantine flag; the
@@ -162,9 +179,12 @@ async function startServer() {
   splashStatus('Starting…');
   const port = await freePort();
   const pyBin = path.dirname(PYTHON);
+  const shell = loginShell();
   const env = {
     ...process.env,
-    PATH: [path.join(pyBin, '..', 'extra-bin'), pyBin, loginShellPath()].join(':'),
+    ...shell.env,
+    PATH: [path.join(pyBin, '..', 'extra-bin'), pyBin, shell.path].join(':'),
+    ...(shell.claude ? { VOICE_REC_CLAUDE: shell.claude } : {}),
     VOICE_REC_DATA: data,
     VOICE_REC_RECORDER_PYTHON: PYTHON,
     VOICE_REC_SILERO_DIR: path.join(models, 'torch', 'hub', 'snakers4_silero-vad_master'),

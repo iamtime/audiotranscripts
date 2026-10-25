@@ -29,7 +29,7 @@
         "to": "voice-rec"
       },
       {
-        "from": "../build/python",
+        "from": "../build/app-python",
         "to": "python"
       },
       {
@@ -57,6 +57,7 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Voice Rec transcribes your speech locally, on this Mac.",
         "NSScreenCaptureUsageDescription": "Voice Rec takes screenshots of what you are talking about.",
+        "NSAudioCaptureUsageDescription": "Voice Rec transcribes the audio of the app you choose (e.g. a call), locally on this Mac.",
         "NSAppleEventsUsageDescription": "Voice Rec copies the selected text when you press the capture hotkey.",
         "LSApplicationCategoryType": "public.app-category.productivity"
       }
