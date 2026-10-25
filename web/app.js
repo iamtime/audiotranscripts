@@ -132,7 +132,9 @@ function relTime(iso) {
   if (diff < 86400) return fmtClock(d);
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + fmtClock(d);
 }
-const speakerColor = n => `var(--s${((n - 1) % 8) + 1})`;
+// Speakers: numbers from diarization, or "Me" / "Them" (app+mic recordings: microphone / the app)
+const speakerColor = n => n === 'Me' ? 'var(--s4)' : n === 'Them' ? 'var(--s2)' : `var(--s${((n - 1) % 8) + 1})`;
+const speakerName = n => typeof n === 'string' ? n : `Speaker ${n}`;
 
 function md(text) {
   // Minimal, safe Markdown → HTML (escape first).
@@ -333,28 +335,32 @@ function renderControl() {
 
   if (idle && !st.starting) {
     // Start appends to the selected session; "New session" starts a fresh transcript.
-    const cont = st.sid && st.session && !st.session.live;
+    const kind = s.source || 'mic';
+    const cont = st.sid && st.session && !st.session.live && kind !== 'file';
+    loadSourceLists();
     el.innerHTML = `
       <div class="rec-main">
-        <button class="rec-btn" id="recBtn" ${st.project ? '' : 'disabled'}><span class="dot"></span>Start recording</button>
-        <div class="rec-hint">${cont
+        <button class="rec-btn" id="recBtn" ${st.project ? '' : 'disabled'}><span class="dot"></span>${kind === 'file' ? 'Transcribe file' : 'Start recording'}</button>
+        <div class="rec-hint">${kind === 'file' ? 'New session · times are positions in the file' : cont
           ? `Appends to <b>${esc(sidLabel(st.sid))}</b> · <button class="link-btn" id="newSessBtn">new session instead</button>`
-          : 'Starts a new session'}</div>
+          : 'Starts a new session'}${kind === 'app+mic' ? ' · use headphones' : ''}</div>
       </div>
       <div class="opt-group">
+        ${sourceControl(s)}
         <div class="opt"><span class="opt-label">Engine</span>
           <select class="field" id="engSel" title="Speech recognition model">${Object.entries(ENGINES).map(([v]) => `<option value="${v}" ${(s.engine || 'whisper') === v ? 'selected' : ''}>${esc(engineLabel(v))}</option>`).join('')}</select></div>
         <div class="opt"><span class="opt-label">Language</span>
           <div class="seg" id="langSeg">${['auto', 'en', 'ru'].map(l => `<button data-v="${l}" class="${(s.lang || 'auto') === l ? 'on' : ''}" ${engineBlocksLang(s.engine, l) ? `disabled title="${ENGINES.gigaam.name} recognizes Russian only"` : ''}>${l === 'auto' ? 'Auto' : l.toUpperCase()}</button>`).join('')}</div></div>
         <div class="opt"><span class="opt-label">Speakers</span>
           <select class="field" id="spkSel">${['auto', 'off', '2', '3', '4', '5', '6', '8'].map(v => `<option value="${v}" ${String(s.speakers || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? 'Detect' : v === 'off' ? 'Off' : v}</option>`).join('')}</select></div>
-        <div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${s.minutes || 180}"> min</div>
+        ${kind === 'file' ? '' : `<div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${s.minutes || 180}"> min</div>`}
         ${pauseControl(s.pause || 1.5)}
-        <label class="switch opt"><input type="checkbox" id="audioChk" ${s.save_audio ? 'checked' : ''}><span class="knob"></span>Save audio</label>
-        <label class="switch opt" title="Capture the screen every second and keep the frames that show something new"><input type="checkbox" id="autoChk" ${s.auto_frames ? 'checked' : ''}><span class="knob"></span>Auto frames</label>
+        ${kind === 'file' ? '' : `<label class="switch opt"><input type="checkbox" id="audioChk" ${s.save_audio ? 'checked' : ''}><span class="knob"></span>Save audio</label>
+        <label class="switch opt" title="Capture the screen every second and keep the frames that show something new"><input type="checkbox" id="autoChk" ${s.auto_frames ? 'checked' : ''}><span class="knob"></span>Auto frames</label>`}
       </div>`;
     $('#recBtn').onclick = startRecording;
     const nb = $('#newSessBtn'); if (nb) nb.onclick = newSession;
+    bindSource();
     $$('#langSeg button').forEach(b => b.onclick = () => { st.settings.lang = b.dataset.v; renderControl(); });
     $('#engSel').onchange = e => {
       st.settings.engine = e.target.value;
@@ -362,9 +368,11 @@ function renderControl() {
       renderControl();
     };
     $('#spkSel').onchange = e => { st.settings.speakers = e.target.value; };
-    $('#minInp').onchange = e => { st.settings.minutes = +e.target.value || 180; };
-    $('#audioChk').onchange = e => { st.settings.save_audio = e.target.checked; };
-    $('#autoChk').onchange = e => { st.settings.auto_frames = e.target.checked; };
+    if (kind !== 'file') {
+      $('#minInp').onchange = e => { st.settings.minutes = +e.target.value || 180; };
+      $('#audioChk').onchange = e => { st.settings.save_audio = e.target.checked; };
+      $('#autoChk').onchange = e => { st.settings.auto_frames = e.target.checked; };
+    }
     bindPause();
     return;
   }
@@ -391,9 +399,10 @@ function renderControl() {
     return;
   }
   // listening
+  const isFile = r.source === 'file';
   el.innerHTML = `
-    <button class="stop-btn" id="recBtn" title="Stop (same as Ctrl+C)"><span class="sq"></span>Stop recording</button>
-    <button class="ghost-btn mute-btn${r.muted ? ' on' : ''}" id="muteBtn" title="${r.muted ? 'Unmute the microphone and continue' : 'Mute the microphone; the session keeps running'}">${r.muted ? ICON.play + 'Resume' : ICON.pause + 'Pause'}</button>
+    <button class="stop-btn" id="recBtn" title="Stop (same as Ctrl+C)"><span class="sq"></span>${isFile ? 'Stop' : 'Stop recording'}</button>
+    ${isFile ? '' : `<button class="ghost-btn mute-btn${r.muted ? ' on' : ''}" id="muteBtn" title="${r.muted ? 'Unmute the microphone and continue' : 'Mute the microphone; the session keeps running'}">${r.muted ? ICON.play + 'Resume' : ICON.pause + 'Pause'}</button>`}
     <div class="rec-state"><span class="rec-pill${r.muted ? ' paused' : ''}"><span class="dot"></span>${r.muted ? 'PAUSED' : 'REC'}</span><span class="timer mono" id="timer">0:00</span></div>
     <canvas class="meter" id="meter" width="336" height="68"></canvas>
     <div class="pipe-status" id="pipeStatus"></div>
@@ -401,17 +410,119 @@ function renderControl() {
     ${r.engine && r.engine !== 'whisper' ? `<span class="chip" title="Speech recognition engine">${esc(ENGINES[r.engine]?.short || r.engine)}</span>` : ''}
     ${r.lang ? `<span class="chip" title="Detected language">${esc(r.lang.toUpperCase())}</span>` : ''}
     ${r.diarization ? '<span class="chip" title="Speaker diarization runs after the session">SPEAKERS</span>' : ''}
+    ${sourceChip(r)}
     <div class="spacer"></div>
     ${!mine ? `<span class="state-sub">Recording in <b>${esc(r.project)}</b></span>` : ''}
-    <button class="ghost-btn auto-btn${r.auto_frames ? ' on' : ''}" id="autoBtn" title="${r.auto_frames ? 'Stop automatic frames' : 'Capture the screen every second and keep the frames that show something new'}"><span class="auto-dot"></span>Auto${r.auto_frames && r.frame_stats && r.frame_stats.scenes != null ? ` · ${r.frame_stats.scenes}` : ''}</button>
-    <button class="ghost-btn" id="snapBtn" title="Take a screenshot of the capture area">${ICON.camera}Snap</button>`;
-  $('#autoBtn').onclick = toggleAutoFrames;
+    ${isFile ? '' : `<button class="ghost-btn auto-btn${r.auto_frames ? ' on' : ''}" id="autoBtn" title="${r.auto_frames ? 'Stop automatic frames' : 'Capture the screen every second and keep the frames that show something new'}"><span class="auto-dot"></span>Auto${r.auto_frames && r.frame_stats && r.frame_stats.scenes != null ? ` · ${r.frame_stats.scenes}` : ''}</button>
+    <button class="ghost-btn" id="snapBtn" title="Take a screenshot of the capture area">${ICON.camera}Snap</button>`}`;
   $('#recBtn').onclick = stopRecording;
-  $('#muteBtn').onclick = toggleMute;
-  $('#snapBtn').onclick = snap;
+  if (!isFile) {
+    $('#autoBtn').onclick = toggleAutoFrames;
+    $('#muteBtn').onclick = toggleMute;
+    $('#snapBtn').onclick = snap;
+  }
   bindPause();
   renderPipeline();
   tickTimer();
+}
+
+// ── Audio source: microphone, an app's audio (+ mic), or an audio file ─────
+const SOURCES = [['mic', 'Microphone'], ['app+mic', 'App + mic'], ['app', 'App only'], ['file', 'Audio file']];
+const audioUrl = () => `/api/projects/${encodeURIComponent(st.project)}/audio`;
+const audioSrc = { apps: null, files: null, filesProject: null, loading: false };
+
+function sourceControl(s) {
+  const kind = s.source || 'mic';
+  let extra = '';
+  if (kind === 'app' || kind === 'app+mic') {
+    const a = audioSrc.apps;
+    if (!a) extra = '<span class="state-sub">Loading apps…</span>';
+    else if (!a.available) extra = `<span class="state-sub" title="${esc(a.error)}">App audio is unavailable</span>`;
+    else {
+      const list = a.apps.slice();
+      if (s.source_app && !list.some(x => x.bundle === s.source_app)) list.push({ bundle: s.source_app, name: s.source_app, gone: true });
+      extra = `<select class="field" id="appSel" title="The app whose audio to transcribe (● = playing sound now)">
+        ${list.length ? list.map(x => `<option value="${esc(x.bundle)}" ${x.bundle === s.source_app ? 'selected' : ''}>${x.playing ? '● ' : ''}${esc(x.name)}${x.gone ? ' (not running)' : ''}</option>`).join('') : '<option value="">No apps with audio</option>'}
+      </select><button class="ghost-btn small" id="appRefresh" title="Refresh the list of apps">↻</button>`;
+    }
+  } else if (kind === 'file') {
+    const files = audioSrc.files || [];
+    extra = files.length
+      ? `<select class="field" id="fileSel" title="Audio file to transcribe (stored in the project's audio folder)">
+          ${files.map(f => `<option value="${esc(f.name)}" ${f.name === s.source_file ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
+          <option value="__upload">Upload another file…</option></select>`
+      : '<button class="ghost-btn small" id="fileUpload">Choose a file…</button>';
+  }
+  return `<div class="opt"><span class="opt-label">Source</span>
+    <select class="field" id="srcSel" title="What to transcribe">${SOURCES.map(([v, l]) => `<option value="${v}" ${kind === v ? 'selected' : ''}>${l}</option>`).join('')}</select>${extra}</div>`;
+}
+
+function bindSource() {
+  $('#srcSel').onchange = e => { st.settings.source = e.target.value; renderControl(); };
+  const as = $('#appSel'); if (as) as.onchange = e => { st.settings.source_app = e.target.value; };
+  const ar = $('#appRefresh'); if (ar) ar.onclick = () => { audioSrc.apps = null; renderControl(); };
+  const fs = $('#fileSel');
+  if (fs) fs.onchange = e => {
+    if (e.target.value === '__upload') { e.target.value = st.settings.source_file || ''; pickAudioFile(); }
+    else st.settings.source_file = e.target.value;
+  };
+  const fu = $('#fileUpload'); if (fu) fu.onclick = pickAudioFile;
+}
+
+// Fetch what the selected source needs (apps playing audio / the project's audio files), once.
+async function loadSourceLists() {
+  const s = st.settings, kind = s.source || 'mic';
+  const needApps = (kind === 'app' || kind === 'app+mic') && !audioSrc.apps;
+  const needFiles = kind === 'file' && st.project && audioSrc.filesProject !== st.project;
+  if (audioSrc.loading || (!needApps && !needFiles)) return;
+  audioSrc.loading = true;
+  try {
+    if (needApps) {
+      audioSrc.apps = await api('GET', '/api/audio/apps');
+      const apps = audioSrc.apps.apps || [];
+      if (!apps.some(a => a.bundle === s.source_app) && apps.length && (!s.source_app || apps[0].playing))
+        s.source_app = (apps.find(a => a.playing) || apps[0]).bundle;
+    }
+    if (needFiles) {
+      audioSrc.files = (await api('GET', audioUrl())).files;
+      audioSrc.filesProject = st.project;
+      if (!audioSrc.files.some(f => f.name === s.source_file)) s.source_file = audioSrc.files.length ? audioSrc.files[0].name : '';
+    }
+  } catch (e) { fail(e); } finally { audioSrc.loading = false; }
+  if (!st.recorder.active && !st.starting) renderControl();
+}
+
+function pickAudioFile() {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'audio/*,video/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.opus,.aiff,.caf,.webm,.mp4,.mov,.mkv';
+  inp.onchange = () => { if (inp.files[0]) uploadAudio(inp.files[0]); };
+  inp.click();
+}
+
+async function uploadAudio(file) {
+  if (!st.project) return;
+  toast(`Uploading ${file.name}…`);
+  try {
+    const res = await fetch(`${audioUrl()}?name=${encodeURIComponent(file.name)}`, { method: 'PUT', body: file });
+    const d = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((d && d.detail) || `${res.status} ${res.statusText}`);
+    audioSrc.files = d.files; audioSrc.filesProject = st.project;
+    st.settings.source = 'file'; st.settings.source_file = d.name;
+    renderControl();
+    toast(`${d.name} is ready. Press “Transcribe file”.`, 'ok');
+  } catch (e) { fail(e); }
+}
+
+function sourceChip(r) {
+  const kind = r.source || 'mic';
+  if (kind === 'mic') return '';
+  if (kind === 'file') {
+    const p = r.source_progress;
+    return `<span class="chip" id="srcChip" title="${esc(r.source_name || 'Audio file')}">FILE${p && p.total ? ` ${fmtDur(p.done)} / ${fmtDur(p.total)}` : ''}</span>`;
+  }
+  const name = (r.source_name || r.source_app || 'app').toUpperCase();
+  return `<span class="chip" title="${kind === 'app+mic' ? 'App audio → Them, microphone → Me' : 'App audio only'}">${esc(name)}${kind === 'app+mic' ? ' + MIC' : ''}</span>`;
 }
 
 function newSession() {
@@ -447,11 +558,12 @@ function renderPipeline() {
   const el = $('#pipeStatus');
   if (el) {
     const speaking = pl.speech != null;
+    const isFile = st.recorder.source === 'file';
     const l1 = st.recorder.muted
-      ? `<span class="a-dot paused"></span><b>Paused</b><span class="pl-sub">microphone muted · session continues</span>`
+      ? `<span class="a-dot paused"></span><b>Paused</b><span class="pl-sub">${(st.recorder.source || 'mic') === 'mic' ? 'microphone' : 'audio'} muted · session continues</span>`
       : speaking
-      ? `<span class="a-dot speech"></span><b>Speech ${fmtSec(pl.speech)}</b><span class="pl-sub">recording · sent after a ${(pl.pause || 1.5).toFixed(1)} s pause</span>`
-      : `<span class="a-dot"></span><b>Listening</b><span class="pl-sub">waiting for speech</span>`;
+      ? `<span class="a-dot speech"></span><b>Speech ${fmtSec(pl.speech)}</b><span class="pl-sub">${isFile ? 'in the file' : 'recording'} · sent after a ${(pl.pause || 1.5).toFixed(1)} s pause${isFile ? '' : ' · <button class="link-btn" id="cutBtn" title="End this phrase now and send it to the recognizer, without waiting for the pause">Cut</button>'}</span>`
+      : `<span class="a-dot"></span><b>${isFile ? 'Reading the file' : 'Listening'}</b><span class="pl-sub">waiting for speech</span>`;
     let l2, pct = null;
     if (pl.current) {
       pct = pl.current.duration ? Math.min(100, Math.round(100 * pl.current.done / pl.current.duration)) : 0;
@@ -554,10 +666,17 @@ async function startRecording() {
       toast(`The recognizer's Python can't load its models: ${check.error}`, 'error', 9000);
       return;
     }
+    const kind = s.source || 'mic';
+    if ((kind === 'app' || kind === 'app+mic') && !s.source_app) throw new Error('Pick the app whose audio to transcribe');
+    if (kind === 'file' && !s.source_file) throw new Error('Choose an audio file first');
+    const app = ((audioSrc.apps && audioSrc.apps.apps) || []).find(a => a.bundle === s.source_app);
     await api('POST', '/api/record/start', {
       project: st.project, engine, lang: s.lang || 'auto', speakers: s.speakers || 'auto',
-      minutes: s.minutes || 180, pause: s.pause || 1.5, save_audio: !!s.save_audio, auto_frames: !!s.auto_frames,
-      continue_sid: st.sid && st.session && !st.session.live ? st.sid : '',
+      minutes: s.minutes || 180, pause: s.pause || 1.5, save_audio: kind !== 'file' && !!s.save_audio,
+      auto_frames: kind !== 'file' && !!s.auto_frames,
+      continue_sid: kind !== 'file' && st.sid && st.session && !st.session.live ? st.sid : '',
+      source: kind, source_app: s.source_app || '', source_file: s.source_file || '',
+      source_name: kind === 'file' ? s.source_file : kind === 'mic' ? '' : (app ? app.name : s.source_app),
     });
   } catch (e) { st.starting = false; renderControl(); fail(e); }
 }
@@ -579,6 +698,9 @@ async function toggleAutoFrames() {
   try { await api('POST', '/api/record/auto', { on }); st.settings.auto_frames = on; }
   catch (e) { fail(e); if (btn) btn.disabled = false; }
 }
+async function cutPhrase() { try { await api('POST', '/api/record/cut'); } catch (e) { fail(e); } }
+// The pipeline status is re-rendered several times a second, so the Cut link is delegated.
+document.addEventListener('click', e => { if (e.target.closest('#cutBtn')) cutPhrase(); });
 async function snap() { try { await api('POST', '/api/record/snap'); } catch (e) { fail(e); } }
 $('#snapSideBtn').onclick = snap;
 
@@ -713,7 +835,7 @@ function entryHtml(e, prev, isNew) {
     return `<div class="row${nw}${hidCls('line', k)}" data-time="${esc(e.time)}" ${visAttr('line', k)}><span class="t">${esc(e.time)}</span><div class="body"><div class="sel-quote"><span class="k">Selected text</span>${esc(e.text)}</div></div>${k ? tools('line', k) : ''}</div>`;
   }
   const cont = e.speaker != null && prev && prev.kind === 'speech' && prev.speaker === e.speaker;
-  const spk = e.speaker != null ? `<div class="spk" style="--sc:${speakerColor(e.speaker)}">Speaker ${e.speaker}</div>` : '';
+  const spk = e.speaker != null ? `<div class="spk" style="--sc:${speakerColor(e.speaker)}">${esc(speakerName(e.speaker))}</div>` : '';
   return `<div class="row${e.speaker != null ? ' has-spk' : ''}${cont ? ' cont' : ''}${nw}${hidCls('line', k)}" data-time="${esc(e.time)}" ${visAttr('line', k)}><span class="t">${esc(e.time)}</span><div class="body">${spk}<p>${esc(e.text)}</p></div>${k ? tools('line', k) : ''}</div>`;
 }
 
@@ -1574,6 +1696,8 @@ function aiPicker(a) {
         ${card('claude', 'Claude Code', a.claude ? 'Installed · best results: sees screenshots, uses your MCP servers' : 'Not installed on this Mac (<a href="https://claude.com/claude-code" target="_blank">get it</a>)', !a.claude)}
         ${Object.entries(P).map(([id, p]) => card(id, p.name, p.key ? `Key saved (${esc(p.key)})` : p.env_key ? 'Key from environment' : id === 'custom' ? 'Ollama, LM Studio, vLLM, any OpenAI-style API' : 'Needs an API key', false)).join('')}
       </div>
+      <div class="ai-claude"><button type="button" class="ghost-btn small" id="aiClaudeTest">Test Claude Code</button>
+        <span id="aiClaudeRes" class="check-res"></span></div>
       <div class="ai-api">
         <div class="frow"><label>API key</label><div><input class="field" id="aiKey" type="password" autocomplete="off">
           <div class="help" id="aiKeyHelp"></div></div></div>
@@ -1589,6 +1713,7 @@ function aiPicker(a) {
       $$('.ai-card', root).forEach(c => c.classList.toggle('on', sel.engine === 'claude' ? c.dataset.id === 'claude' : c.dataset.id === sel.provider));
       const isApi = sel.engine === 'api';
       $('.ai-api', root).classList.toggle('hidden', !isApi);
+      $('.ai-claude', root).classList.toggle('hidden', isApi || !a.claude);
       if (!isApi) return;
       const p = P[sel.provider];
       const same = sel.provider === a.provider;
@@ -1608,6 +1733,16 @@ function aiPicker(a) {
       if (c.dataset.id === 'claude') sel.engine = 'claude'; else { sel.engine = 'api'; sel.provider = c.dataset.id; }
       show();
     });
+    $('#aiClaudeTest', root).onclick = async () => {
+      const el = $('#aiClaudeRes', root);
+      el.className = 'check-res'; el.textContent = 'Asking Claude…';
+      try {
+        const r = await api('POST', '/api/ai/test-claude');
+        el.className = 'check-res ' + (r.ok ? 'ok' : 'bad');
+        el.textContent = r.ok ? `✓ Works (answered “${r.reply}”)` : `✗ ${r.error}`;
+        el.title = r.path || '';
+      } catch (e) { el.className = 'check-res bad'; el.textContent = `✗ ${e.message}`; }
+    };
     $('#aiTest', root).onclick = async () => {
       const el = $('#aiTestRes', root);
       el.className = 'check-res'; el.textContent = 'Checking…';
@@ -1775,6 +1910,12 @@ async function handle(m) {
     case 'level':
       st.levels.push(m.rms); st.levels.shift();
       break;
+    case 'source_progress': {
+      st.recorder.source_progress = { done: m.done, total: m.total };
+      const chip = $('#srcChip');
+      if (chip) chip.outerHTML = sourceChip(st.recorder);
+      break;
+    }
     case 'entry':
       if (m.project === st.project && m.sid === st.sid) appendEntry(m.idx, m.entry);
       break;

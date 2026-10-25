@@ -42,7 +42,7 @@ Create the {mode_title} of a FULL annotated transcript of a recorded session, as
 ## Inputs
 - Raw speech-to-text transcript (snapshot): {input}
   {n_lines} lines, {t_first}–{t_last}{live_note}
-  Line formats: "[HH:MM:SS] text"; "[HH:MM:SS] [Speaker N] text" (automatic diarization: usually heavily over-split, treat speaker numbers only as weak hints); "[HH:MM:SS] [screenshot: /abs/path.png]" (the screen was captured at that moment); "[HH:MM:SS] [selection: text]" (text the presenter highlighted on screen).
+  Line formats: "[HH:MM:SS] text"; "[HH:MM:SS] [Speaker N] text" (automatic diarization: usually heavily over-split, treat speaker numbers only as weak hints); "[HH:MM:SS] [Me] text" / "[HH:MM:SS] [Them] text" (a call recorded as two channels: Me = the person recording, from their microphone — reliable; Them = everyone else, from the call app's audio; with diarization the Them lines become [Speaker N] next to the [Me] ones); "[HH:MM:SS] [screenshot: /abs/path.png]" (the screen was captured at that moment); "[HH:MM:SS] [selection: text]" (text the presenter highlighted on screen).
 - Screenshots taken during the session. View them with the Read tool: they show slides, documents, shared screens and often the meeting's participant list, so use them to identify speakers and to fix names, product names and technical terms. OCR text sits next to each image (.txt) if you need it.
 {shots}
 - Style reference: {style}
