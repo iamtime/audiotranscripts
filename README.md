@@ -1,6 +1,6 @@
 <p align="center"><img src="packaging/brand/ushi-logo-main.png" alt="ushi" width="360"></p>
 
-# ushi (formerly voice-rec)
+# ushi 
 
 > 📝 **Article about this project:** [hybrismart.com](https://hybrismart.com/2026/10/25/voice-screen-local-models-en/) (also in [Russian](https://hybrismart.com/2026/10/25/voice-screen-local-models/) and [Ukrainian](https://hybrismart.com/2026/10/25/voice-screen-local-models-ua/))
 
