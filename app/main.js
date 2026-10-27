@@ -1,13 +1,14 @@
-// Voice Rec — macOS app shell around the web UI (server.py).
+// Voice Rec - macOS / Windows app shell around the web UI (server.py).
 //
 // Starts the bundled Python (Resources/python) with server.py on a free local
 // port and shows the UI in a window. Recordings and settings live in a writable
-// data folder (default ~/Library/Application Support/Voice Rec/data); the
-// bundled models are clone-copied into <data>/models on first launch, so the
-// libraries see an ordinary writable cache and can still download extra models.
+// data folder (default ~/Library/Application Support/Voice Rec/data, on Windows
+// %APPDATA%\Voice Rec\data); the bundled models are copied (macOS: clone-copied)
+// into <data>/models on first launch, so the libraries see an ordinary writable
+// cache and can still download extra models.
 //
 // Dev mode (`npm start` in app/): uses the repo sources, build/python (or
-// $VOICE_REC_PYTHON) and build/models.
+// $VOICE_REC_PYTHON, e.g. ..\.venv\Scripts\python.exe on Windows) and build/models.
 
 const { app, BrowserWindow, Menu, dialog, shell, systemPreferences } = require('electron');
 const { spawn, execFile, execFileSync } = require('child_process');
@@ -17,10 +18,13 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 
+const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
 const RES = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '..', 'build');
 const SRC = app.isPackaged ? path.join(RES, 'voice-rec') : path.resolve(__dirname, '..');
-const PYTHON = app.isPackaged ? path.join(RES, 'python', 'bin', 'python3')
-  : (process.env.VOICE_REC_PYTHON || path.join(RES, 'python', 'bin', 'python3'));
+// python-build-standalone layout: python.exe at the top on Windows, bin/python3 elsewhere.
+const BUNDLED_PYTHON = IS_WIN ? path.join(RES, 'python', 'python.exe') : path.join(RES, 'python', 'bin', 'python3');
+const PYTHON = app.isPackaged ? BUNDLED_PYTHON : (process.env.VOICE_REC_PYTHON || BUNDLED_PYTHON);
 const BUNDLED_MODELS = path.join(RES, 'models');
 const CONFIG = path.join(app.getPath('userData'), 'config.json');
 
@@ -68,14 +72,17 @@ function splashStatus(text) {
 
 // ── Environment ─────────────────────────────────────────────────────────────
 
-// Apps started from Finder get a bare environment. Take the login shell's — PATH,
+// Apps started from Finder get a bare environment. Take the login shell's - PATH,
 // and also whatever ~/.zshrc exports for the Claude Code CLI (ANTHROPIC_API_KEY,
-// CLAUDE_CODE_USE_BEDROCK, CLAUDE_CONFIG_DIR, proxies, …) — so Beautify and chat
+// CLAUDE_CODE_USE_BEDROCK, CLAUDE_CONFIG_DIR, proxies, …) - so Beautify and chat
 // run `claude` exactly as in Terminal. Also resolve `claude` the way the shell
 // does: an alias (e.g. to ~/.claude/local/claude) is invisible on PATH.
 const SHELL_ENV_SKIP = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'TERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION',
   'TERM_SESSION_ID', 'PYTHONHOME', 'PYTHONPATH', 'ELECTRON_RUN_AS_NODE']);
 function loginShell() {
+  if (IS_WIN) {   // Windows apps get the user's environment; claude_cli.py finds claude.exe itself
+    return { env: {}, path: process.env.PATH || process.env.Path || '', claude: '' };
+  }
   const fallbackPath = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'),
     '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':');
   try {
@@ -101,7 +108,7 @@ function loginShell() {
 // Files of an app downloaded from the internet carry the quarantine flag; the
 // Python libraries it loads would then be checked one by one by Gatekeeper.
 function clearQuarantine() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged || !IS_MAC) return;
   const bundle = path.resolve(RES, '..', '..');
   execFile('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', bundle], () => {});
 }
@@ -111,6 +118,14 @@ function copyClone(src, dst) {
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     const tmp = dst + '.partial';
     fs.rmSync(tmp, { recursive: true, force: true });
+    if (!IS_MAC) {
+      fs.cp(src, tmp, { recursive: true }, (err) => {
+        if (err) return reject(err);
+        fs.renameSync(tmp, dst);
+        resolve();
+      });
+      return;
+    }
     // -c: APFS clone (instant, no extra disk space) when on the same volume.
     execFile('/bin/cp', ['-cR', src, tmp], (err) => {
       if (err) return reject(err);
@@ -183,7 +198,7 @@ async function startServer() {
   const env = {
     ...process.env,
     ...shell.env,
-    PATH: [path.join(pyBin, '..', 'extra-bin'), pyBin, shell.path].join(':'),
+    PATH: [path.join(IS_WIN ? pyBin : path.join(pyBin, '..'), 'extra-bin'), pyBin, shell.path].join(path.delimiter),
     ...(shell.claude ? { VOICE_REC_CLAUDE: shell.claude } : {}),
     VOICE_REC_DATA: data,
     VOICE_REC_RECORDER_PYTHON: PYTHON,
@@ -197,8 +212,10 @@ async function startServer() {
     TOKENIZERS_PARALLELISM: 'false',
     PYTHONNOUSERSITE: '1',
     PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1',
     ...(app.isPackaged ? { PYTHONDONTWRITEBYTECODE: '1' } : {}),
   };
+  if (IS_WIN) delete env.Path;   // Windows env names are case-insensitive: keep one PATH
   delete env.PYTHONHOME;
   delete env.PYTHONPATH;
   delete env.ELECTRON_RUN_AS_NODE;
@@ -206,7 +223,7 @@ async function startServer() {
   const log = fs.createWriteStream(path.join(logs, 'server.log'), { flags: 'a' });
   log.write(`\n=== ${new Date().toISOString()} Voice Rec ${app.getVersion()} port ${port}\n`);
   server = spawn(PYTHON, ['-u', path.join(SRC, 'server.py'), '--port', String(port), '--no-browser'],
-    { cwd: data, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd: data, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let tail = '';
   const onOut = (d) => {
     log.write(d);
@@ -236,14 +253,39 @@ async function startServer() {
   throw new Error('The server did not answer in 3 minutes');
 }
 
-function stopServer() {
-  return new Promise((resolve) => {
-    if (!server) return resolve();
-    const proc = server;
-    proc.once('exit', () => resolve());
-    proc.kill('SIGTERM');   // uvicorn shutdown → server stops a running recording cleanly
-    setTimeout(() => { if (proc.exitCode === null) proc.kill('SIGKILL'); }, 600000);
+function postJson(url, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(url, { method: 'POST', timeout, headers: { Origin: serverUrl, 'Content-Type': 'application/json' } },
+      (res) => { res.resume(); res.on('end', resolve); });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end('{}');
   });
+}
+
+async function stopServer() {
+  if (!server) return;
+  const proc = server;
+  const exited = new Promise((resolve) => proc.once('exit', resolve));
+  if (!IS_WIN) {
+    proc.kill('SIGTERM');   // uvicorn shutdown → server stops a running recording cleanly
+    const timer = setTimeout(() => { if (proc.exitCode === null) proc.kill('SIGKILL'); }, 600000);
+    await exited;
+    clearTimeout(timer);
+    return;
+  }
+  // Windows has no SIGTERM: kill() would end the server at once and leave the recorder
+  // (a child process) running. Stop the recording through the API, let it finish
+  // (diarization, saving), then end the whole process tree.
+  try {
+    if (await recorderActive()) {
+      await postJson(`${serverUrl}/api/record/stop`);
+      const deadline = Date.now() + 600000;
+      while (Date.now() < deadline && await recorderActive()) await new Promise((r) => setTimeout(r, 500));
+    }
+  } catch { /* the server is gone already */ }
+  if (proc.exitCode === null) execFile('taskkill', ['/pid', String(proc.pid), '/T', '/F'], () => {});
+  await exited;
 }
 
 async function recorderActive() {
@@ -343,9 +385,32 @@ async function changeDataFolder() {
   app.quit();
 }
 
+function privacyMenu() {
+  if (IS_WIN) {
+    return [
+      { label: 'Privacy Settings: Microphone', click: () => shell.openExternal('ms-settings:privacy-microphone') },
+      { label: 'Sound Settings', click: () => shell.openExternal('ms-settings:sound') },
+    ];
+  }
+  return [
+    {
+      label: 'Privacy Settings: Microphone',
+      click: () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'),
+    },
+    {
+      label: 'Privacy Settings: Screen Recording',
+      click: () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'),
+    },
+    {
+      label: 'Privacy Settings: Accessibility',
+      click: () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
+    },
+  ];
+}
+
 function buildMenu() {
   const template = [
-    { role: 'appMenu' },
+    ...(IS_MAC ? [{ role: 'appMenu' }] : []),
     {
       label: 'File',
       submenu: [
@@ -353,7 +418,7 @@ function buildMenu() {
         { label: 'Change Data Folder…', click: changeDataFolder },
         { label: 'Show Server Log', click: () => shell.openPath(path.join(dataDir(), 'logs', 'server.log')) },
         { type: 'separator' },
-        { role: 'close' },
+        IS_MAC ? { role: 'close' } : { role: 'quit' },
       ],
     },
     { role: 'editMenu' },
@@ -366,23 +431,7 @@ function buildMenu() {
       ],
     },
     { role: 'windowMenu' },
-    {
-      role: 'help',
-      submenu: [
-        {
-          label: 'Privacy Settings: Microphone',
-          click: () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'),
-        },
-        {
-          label: 'Privacy Settings: Screen Recording',
-          click: () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'),
-        },
-        {
-          label: 'Privacy Settings: Accessibility',
-          click: () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
-        },
-      ],
-    },
+    { role: 'help', submenu: privacyMenu() },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -398,7 +447,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     buildMenu();
-    if (app.isPackaged && !app.isInApplicationsFolder()) {
+    if (IS_MAC && app.isPackaged && !app.isInApplicationsFolder()) {
       const { response } = await dialog.showMessageBox({
         type: 'question', buttons: ['Move to Applications', 'Not Now'], defaultId: 0, cancelId: 1,
         message: 'Move Voice Rec to the Applications folder?',
@@ -412,7 +461,7 @@ if (!app.requestSingleInstanceLock()) {
     showSplash();
     // Ask for the microphone up front, so the prompt names Voice Rec (the
     // recorder is a child process and inherits the app's permission).
-    systemPreferences.askForMediaAccess('microphone').catch(() => {});
+    if (IS_MAC) systemPreferences.askForMediaAccess('microphone').catch(() => {});
     try {
       await startServer();
       createMainWindow();

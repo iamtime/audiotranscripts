@@ -8,7 +8,8 @@
   "author": "Rauf Aliev",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --mac dmg --arm64"
+    "dist": "electron-builder --mac dmg --arm64",
+    "dist:win": "electron-builder --win nsis --x64"
   },
   "build": {
     "appId": "com.raufaliev.voicerec",
@@ -77,6 +78,24 @@
           "path": "/Applications"
         }
       ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     }
   },
   "devDependencies": {

@@ -106,6 +106,17 @@ powershell -ExecutionPolicy Bypass -File setup_windows.ps1    # .venv + PyTorch 
 - **Stop** sends `STOP` on the recorder's stdin (Windows has no SIGINT for child processes); Ctrl+C in the console works as before.
 - **ffmpeg** is taken from `PATH`, else the static binary from `imageio-ffmpeg`.
 
+**Windows app.** `Voice Rec-Setup-<version>-x64.exe` installs the web UI as an app with everything inside (Python 3.12 and all dependencies, ffmpeg); models download on first use. Data lives in `%APPDATA%\Voice Rec\data`. Build it in Git Bash (needs [uv](https://docs.astral.sh/uv/) and Node 18+):
+
+```bash
+packaging/build_app_win.sh               # GPU=auto: bundles cuBLAS + cuDNN when this PC has an NVIDIA GPU
+GPU=0 packaging/build_app_win.sh         # CPU only, smaller
+MODELS=core packaging/build_app_win.sh   # also bundle models (see packaging/fetch_models.py)
+cd app && VOICE_REC_PYTHON=..\.venv\Scripts\python.exe npm start   # dev run with the repo's venv
+```
+
+The bundled PyTorch is the CPU build (VAD, diarization, OCR, CLIP); Whisper uses the GPU through CTranslate2. The installer is not code-signed: on first start SmartScreen shows "Windows protected your PC" -- *More info* → *Run anyway*. Closing the app stops a running recording properly (it is finished and saved first).
+
 ## Usage
 
 ### Recording
