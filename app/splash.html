@@ -2,24 +2,24 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Voice Rec</title>
+<title>ushi</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #14161a; color: #e8e9ec;
-    font: 13px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; -webkit-app-region: drag; user-select: none; }
-  .wrap { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
-  .dot { width: 14px; height: 14px; border-radius: 50%; background: #ff5a4f; box-shadow: 0 0 0 0 rgba(255, 90, 79, .6);
-    animation: pulse 1.4s infinite; }
-  h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .2px; }
-  #status { color: #8b8f98; max-width: 360px; text-align: center; min-height: 1.4em; }
-  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255, 90, 79, .55); } 70% { box-shadow: 0 0 0 14px rgba(255, 90, 79, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(255, 90, 79, 0); } }
+  html, body { margin: 0; height: 100%; background: #fcfaf7; color: #24252f;
+    font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif; -webkit-app-region: drag; user-select: none; }
+  .wrap { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+  img { width: 300px; height: auto; display: block; }
+  .row { display: flex; align-items: center; gap: 9px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #c9612b; box-shadow: 0 0 0 0 rgba(201, 97, 43, .55);
+    animation: pulse 1.4s infinite; flex: none; }
+  #status { color: #5b5852; max-width: 320px; text-align: center; min-height: 1.4em; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(201, 97, 43, .5); } 70% { box-shadow: 0 0 0 10px rgba(201, 97, 43, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(201, 97, 43, 0); } }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="dot"></div>
-  <h1>Voice Rec</h1>
-  <div id="status">Starting…</div>
+  <img src="splash-logo.jpg" alt="ushi">
+  <div class="row"><span class="dot"></span><span id="status">Starting…</span></div>
 </div>
 <script>
   window.setStatus = (t) => { document.getElementById('status').textContent = t; };

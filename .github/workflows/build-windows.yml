@@ -35,7 +35,7 @@ jobs:
         run: packaging/build_app_win.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: voice-rec-windows${{ inputs.gpu && '-gpu' || '' }}
+          name: ushi-windows${{ inputs.gpu && '-gpu' || '' }}
           path: app/dist/*.exe
           retention-days: 14
       - name: Attach to the release
@@ -45,5 +45,5 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           gh release view "$TAG" >/dev/null 2>&1 ||
-            gh release create "$TAG" --draft --verify-tag --title "Voice Rec ${TAG#v}" --notes ""
+            gh release create "$TAG" --draft --verify-tag --title "ushi ${TAG#v}" --notes ""
           gh release upload "$TAG" app/dist/*.exe --clobber

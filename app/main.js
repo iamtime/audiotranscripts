@@ -1,9 +1,10 @@
-// Voice Rec - macOS / Windows app shell around the web UI (server.py).
+// ushi (formerly Voice Rec) - macOS / Windows app shell around the web UI (server.py).
 //
 // Starts the bundled Python (Resources/python) with server.py on a free local
 // port and shows the UI in a window. Recordings and settings live in a writable
-// data folder (default ~/Library/Application Support/Voice Rec/data, on Windows
-// %APPDATA%\Voice Rec\data); the bundled models are copied (macOS: clone-copied)
+// data folder (default ~/Library/Application Support/ushi/data, on Windows
+// %APPDATA%\ushi\data; "Voice Rec" instead of "ushi" for an install from before
+// the rename); the bundled models are copied (macOS: clone-copied)
 // into <data>/models on first launch, so the libraries see an ordinary writable
 // cache and can still download extra models.
 //
@@ -26,6 +27,9 @@ const SRC = app.isPackaged ? path.join(RES, 'voice-rec') : path.resolve(__dirnam
 const BUNDLED_PYTHON = IS_WIN ? path.join(RES, 'python', 'python.exe') : path.join(RES, 'python', 'bin', 'python3');
 const PYTHON = app.isPackaged ? BUNDLED_PYTHON : (process.env.VOICE_REC_PYTHON || BUNDLED_PYTHON);
 const BUNDLED_MODELS = path.join(RES, 'models');
+// The app was called "Voice Rec": an existing install keeps its config, recordings and models there.
+const LEGACY_USER_DATA = path.join(app.getPath('appData'), 'Voice Rec');
+if (fs.existsSync(LEGACY_USER_DATA)) app.setPath('userData', LEGACY_USER_DATA);
 const CONFIG = path.join(app.getPath('userData'), 'config.json');
 
 let server = null;        // server.py child process
@@ -53,8 +57,8 @@ function dataDir() {
 
 function showSplash() {
   splash = new BrowserWindow({
-    width: 420, height: 220, frame: false, resizable: false, show: false,
-    backgroundColor: '#14161a', webPreferences: { contextIsolation: true },
+    width: 380, height: 380, frame: false, resizable: false, show: false,
+    backgroundColor: '#fcfaf7', webPreferences: { contextIsolation: true },
   });
   splash.loadFile(path.join(__dirname, 'splash.html'));
   splash.once('ready-to-show', () => splash && splash.show());
@@ -221,7 +225,7 @@ async function startServer() {
   delete env.ELECTRON_RUN_AS_NODE;
 
   const log = fs.createWriteStream(path.join(logs, 'server.log'), { flags: 'a' });
-  log.write(`\n=== ${new Date().toISOString()} Voice Rec ${app.getVersion()} port ${port}\n`);
+  log.write(`\n=== ${new Date().toISOString()} ushi ${app.getVersion()} port ${port}\n`);
   server = spawn(PYTHON, ['-u', path.join(SRC, 'server.py'), '--port', String(port), '--no-browser'],
     { cwd: data, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let tail = '';
@@ -235,7 +239,7 @@ async function startServer() {
     log.write(`=== server exited: ${code ?? sig}\n`);
     server = null;
     if (!quitting) {
-      dialog.showErrorBox('Voice Rec stopped',
+      dialog.showErrorBox('ushi stopped',
         `The recognition server exited (${code ?? sig}).\n\n${tail.slice(-1500)}\n\nLog: ${path.join(logs, 'server.log')}`);
       app.quit();
     }
@@ -327,7 +331,7 @@ function wireLinks(win) {
 function createMainWindow() {
   mainWin = new BrowserWindow({
     width: 1440, height: 920, minWidth: 900, minHeight: 600, show: false,
-    title: 'Voice Rec', backgroundColor: '#14161a',
+    title: 'ushi', backgroundColor: '#14161a',
     webPreferences: { contextIsolation: true, spellcheck: true },
   });
   wireLinks(mainWin);
@@ -450,8 +454,8 @@ if (!app.requestSingleInstanceLock()) {
     if (IS_MAC && app.isPackaged && !app.isInApplicationsFolder()) {
       const { response } = await dialog.showMessageBox({
         type: 'question', buttons: ['Move to Applications', 'Not Now'], defaultId: 0, cancelId: 1,
-        message: 'Move Voice Rec to the Applications folder?',
-        detail: 'Run from the disk image, Voice Rec has to copy its bundled models to your disk; from Applications they take no extra space.',
+        message: 'Move ushi to the Applications folder?',
+        detail: 'Run from the disk image, ushi has to copy its bundled models to your disk; from Applications they take no extra space.',
       });
       if (response === 0) {
         try { if (app.moveToApplicationsFolder()) return; } catch (e) { dialog.showErrorBox('Could not move', String(e)); }
@@ -459,14 +463,14 @@ if (!app.requestSingleInstanceLock()) {
     }
     clearQuarantine();
     showSplash();
-    // Ask for the microphone up front, so the prompt names Voice Rec (the
+    // Ask for the microphone up front, so the prompt names ushi (the
     // recorder is a child process and inherits the app's permission).
     if (IS_MAC) systemPreferences.askForMediaAccess('microphone').catch(() => {});
     try {
       await startServer();
       createMainWindow();
     } catch (e) {
-      dialog.showErrorBox('Voice Rec could not start', `${e.message || e}\n\nLog: ${path.join(dataDir(), 'logs', 'server.log')}`);
+      dialog.showErrorBox('ushi could not start', `${e.message || e}\n\nLog: ${path.join(dataDir(), 'logs', 'server.log')}`);
       quitting = true;
       await stopServer();
       app.exit(1);

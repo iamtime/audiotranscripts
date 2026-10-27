@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build "Voice Rec.app" and a DMG for Apple Silicon Macs (macOS 14+):
-#   app/dist/Voice Rec-<version>-arm64.dmg
+# Build "ushi.app" and a DMG for Apple Silicon Macs (macOS 14+):
+#   app/dist/ushi-<version>-arm64.dmg
 #
 #   packaging/build_app.sh                 # everything bundled, incl. all models (~4 GB DMG)
 #   MODELS=core packaging/build_app.sh     # without Whisper and Parakeet (downloaded on first use)

@@ -16,6 +16,7 @@
     --new-ink:#0b4fb0; --new-bg:#e7f0ff; --new-bd:#b9d3ff;
     --confirm-ink:#1f7a3d; --confirm-bg:#e8f6ec; --confirm-bd:#b6e2c2;
     --update-ink:#9a5a00; --update-bg:#fff3e0; --update-bd:#ffd699;
+    --summary-ink:#3d4a5c; --summary-bg:#eef1f5; --summary-bd:#d3d9e2;
     --time:#98a1ad;
   }
   @media (prefers-color-scheme: dark){
@@ -25,6 +26,7 @@
       --new-ink:#8fbcff; --new-bg:#132444; --new-bd:#274a80;
       --confirm-ink:#7fd69a; --confirm-bg:#122c1c; --confirm-bd:#2c5a3b;
       --update-ink:#f2c17a; --update-bg:#2e2413; --update-bd:#5c4623;
+      --summary-ink:#c3ccd8; --summary-bg:#1d232b; --summary-bd:#343c47;
       --time:#6b7480;
     }
   }
@@ -34,6 +36,7 @@
       --new-ink:#8fbcff; --new-bg:#132444; --new-bd:#274a80;
       --confirm-ink:#7fd69a; --confirm-bg:#122c1c; --confirm-bd:#2c5a3b;
       --update-ink:#f2c17a; --update-bg:#2e2413; --update-bd:#5c4623;
+      --summary-ink:#c3ccd8; --summary-bg:#1d232b; --summary-bd:#343c47;
       --time:#6b7480;
   }
   *{box-sizing:border-box}
@@ -60,6 +63,8 @@
   .callout.new{background:var(--new-bg);border-color:var(--new-bd)}
   .callout.confirm{background:var(--confirm-bg);border-color:var(--confirm-bd)}
   .callout.update{background:var(--update-bg);border-color:var(--update-bd)}
+  .badge.summary{color:var(--summary-ink);background:var(--summary-bg);border:1px solid var(--summary-bd)}
+  .callout.summary{background:var(--summary-bg);border-color:var(--summary-bd)}
   .callout .top{display:flex;align-items:center;gap:9px;margin-bottom:5px;flex-wrap:wrap}
   .callout .lead{font-weight:650;font-size:.95rem}
   .callout p{margin:5px 0 0;font-size:.92rem}
@@ -101,6 +106,7 @@
 
   <div class="legend">
     <h3>How to read this - the callouts</h3>
+    <div class="item"><span class="badge summary">📝 SUMMARY</span><span>The gist of the topic above: key points, decisions, numbers, action items.</span></div>
     <div class="item"><span class="badge new">🆕 NEW</span><span>Something we did <b>not</b> have in the source material before this session.</span></div>
     <div class="item"><span class="badge confirm">✅ CONFIRMS</span><span>Confirms / adds colour to something already documented.</span></div>
     <div class="item"><span class="badge update">🔄 UPDATES</span><span>Changes, narrows, or <b>contradicts</b> what prior sources said - worth reconciling.</span></div>
@@ -118,6 +124,11 @@
 <p>Next turn.</p></div>
 
 <figure class="shot"><img src="../../screenshots/screenshot_YYYYMMDD_HHMMSS_mmm.png" alt="What the screenshot shows" loading="lazy"><figcaption><span class="time">09:34:20</span>What is on screen and why it matters.</figcaption></figure>
+
+<aside class="callout summary">
+  <div class="top"><span class="badge summary">📝 SUMMARY</span><span class="lead">One-sentence takeaway.</span></div>
+  <p>Key points, decisions and action items with <b>key terms</b> in bold.</p>
+</aside>
 
 <aside class="callout new">
   <div class="top"><span class="badge new">🆕 NEW</span><span class="lead">One-sentence takeaway.</span></div>

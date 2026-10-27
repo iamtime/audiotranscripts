@@ -123,3 +123,16 @@ def utf8_stdio():
 def child_env(**extra) -> dict:
     """Environment for Python children whose output we parse: unbuffered, UTF-8."""
     return {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", **extra}
+
+
+def reveal(path: Path):
+    """Show a file in the system file manager: selected in Finder / Explorer, or its folder elsewhere."""
+    import subprocess
+    path = Path(path).resolve()
+    if IS_MAC:
+        subprocess.Popen(["open", "-R", str(path)])
+    elif IS_WINDOWS:
+        # explorer.exe takes "/select,<path>" as one argument; its exit code is meaningless
+        subprocess.Popen(["explorer", f"/select,{path}"])
+    else:
+        subprocess.Popen(["xdg-open", str(path.parent if path.is_file() else path)])

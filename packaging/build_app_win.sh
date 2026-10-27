@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the Windows app (x64, Windows 10/11): app/dist/Voice Rec-Setup-<version>-x64.exe
+# Build the Windows app (x64, Windows 10/11): app/dist/ushi-Setup-<version>-x64.exe
 # Run in Git Bash (bash, curl, tar and cp come with Git for Windows); needs uv and Node 18+.
 #
 #   packaging/build_app_win.sh                  # GPU=auto: Whisper on NVIDIA GPUs if this PC has one

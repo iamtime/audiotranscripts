@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""voice-rec web UI server.
+"""ushi web UI server.
 
 Runs main.py (unchanged console recorder) as a subprocess and exposes a browser
 UI: live transcript, screenshots with statuses, capture-area selection,
@@ -27,6 +27,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -103,10 +104,14 @@ def recorder_python(settings: dict) -> str:
     return os.environ.get("VOICE_REC_RECORDER_PYTHON") or settings.get("recorder_python") or sys.executable
 
 
+# The models loaded faster than this: start capturing without asking (see --wait-go)
+READY_AUTO_GO_SEC = 4.0
+
+
 class Recorder:
     def __init__(self):
         self.proc: asyncio.subprocess.Process | None = None
-        self.state = "idle"     # idle | loading | listening | stopping | finalizing | error
+        self.state = "idle"     # idle | loading | ready | listening | stopping | finalizing | error
         self.detail = ""
         self.project = ""
         self.sid = ""
@@ -166,6 +171,17 @@ class Recorder:
         hub.emit({"type": "recorder", **self.snapshot()})
 
     async def start(self, opts: dict):
+        if self.active and self.state == "ready":
+            # Models are already loaded (the "ready" prompt was closed): start right away,
+            # with the live-editable options as they are now.
+            for k in ("minutes", "pause"):
+                if opts.get(k):
+                    self.options[k] = opts[k]
+            await self._send(f"MINUTES {float(self.options.get('minutes') or 180)}")
+            self.pipeline["pause"] = float(self.options.get("pause") or 1.5)
+            await self._send(f"PAUSE {self.pipeline['pause']}")
+            await self.go()
+            return
         if self.active:
             raise HTTPException(409, "A recording is already running")
         project = S.safe_name(opts.get("project", ""))
@@ -193,6 +209,8 @@ class Recorder:
             raise HTTPException(400, "GigaAM recognizes Russian only; pick Auto/RU or another engine")
         if engine != "whisper":
             cmd += ["--engine", engine]
+        if str(opts.get("source") or "mic") != "file":
+            cmd.append("--wait-go")         # an audio file has nobody to wait for
         self.engine = engine
         speakers = str(opts.get("speakers") or "off")
         if speakers != "off":
@@ -258,11 +276,28 @@ class Recorder:
         else:
             self.proc.send_signal(signal.SIGINT)
 
+    async def _send(self, line: str):
+        self.proc.stdin.write(line.encode() + b"\n")
+        await self.proc.stdin.drain()
+
+    async def go(self):
+        """Models are loaded (state "ready"): start capturing."""
+        if not self.active or self.state != "ready":
+            raise HTTPException(409, "The recognizer is not waiting to start")
+        await self._send("GO")
+        self.set_state("loading", "Starting capture")
+
+    async def set_minutes(self, minutes: float):
+        self.options["minutes"] = minutes
+        if self.active:
+            await self._send(f"MINUTES {minutes}")
+        hub.emit({"type": "recorder", **self.snapshot()})
+
     async def stop(self):
         if not self.active:
             return
         self.interrupt()
-        if self.state in ("loading", "listening"):
+        if self.state in ("loading", "ready", "listening"):
             self.set_state("stopping", "Stopping")
 
     async def snap(self):
@@ -389,6 +424,10 @@ class Recorder:
             st = ev.get("state")
             if st == "listening":
                 self.listening_at = ev.get("ts", time.time())
+            if st == "ready" and time.time() - self.started_at < READY_AUTO_GO_SEC:
+                # Loaded quickly: the user is still at the Start button, no need to ask.
+                await self._send("GO")
+                return
             self.set_state(st, ev.get("detail", ""))
         elif t == "session":
             self.sid = ev["timestamp"]
@@ -407,6 +446,9 @@ class Recorder:
         elif t == "source_progress":
             self.source_progress = {"done": ev.get("done", 0), "total": ev.get("total", 0)}
             hub.emit({"type": "source_progress", **self.source_progress})
+        elif t == "minutes":
+            self.options["minutes"] = ev.get("minutes")
+            hub.emit({"type": "recorder", **self.snapshot()})
         elif t == "muted":
             self.muted = bool(ev.get("muted"))
             hub.emit({"type": "recorder", **self.snapshot()})
@@ -480,6 +522,10 @@ class Recorder:
         rc = await self.proc.wait()
         await asyncio.sleep(0.5)  # let the tail drain
         project, sid = self.project, self.sid
+        if not self.listening_at:
+            sid = ""        # cancelled while loading / waiting for GO: nothing was recorded
+            if rc in (0, -signal.SIGINT):
+                events_path.unlink(missing_ok=True)
         if sid:
             sdir = S.session_dir(project, sid)
             sdir.mkdir(parents=True, exist_ok=True)
@@ -1320,6 +1366,22 @@ async def beautify_cancel(project: str, sid: str):
 
 # Recording
 
+@app.post("/api/reveal")
+async def reveal(data: dict = Body(...)):
+    """Open the folder of a project file (given by its /files/ URL), with the file selected."""
+    url = str(data.get("url") or "")
+    if not url.startswith("/files/"):
+        raise HTTPException(400, "Not a project file")
+    path = (S.PROJECTS_DIR / unquote(url[len("/files/"):].split("?")[0])).resolve()
+    if not path.is_relative_to(S.PROJECTS_DIR.resolve()) or not path.exists():
+        raise HTTPException(404, "File not found")
+    try:
+        native_helpers.reveal(path)
+    except OSError as e:
+        raise HTTPException(500, f"Could not open the folder: {e}")
+    return {"ok": True}
+
+
 @app.post("/api/record/start")
 async def record_start(data: dict = Body(...)):
     try:
@@ -1344,6 +1406,17 @@ async def record_pause(data: dict = Body(...)):
     S.save_settings({"pause": seconds})
     await recorder.set_pause(seconds)
     return {"pause": seconds}
+
+
+@app.post("/api/record/minutes")
+async def record_minutes(data: dict = Body(...)):
+    try:
+        minutes = round(max(1.0, min(1440.0, float(data.get("minutes")))), 1)
+    except (TypeError, ValueError):
+        _err(ValueError("Bad auto-stop value"))
+    S.save_settings({"minutes": minutes})
+    await recorder.set_minutes(minutes)
+    return {"minutes": minutes}
 
 
 @app.post("/api/record/mute")
@@ -1571,7 +1644,7 @@ async def capture_windows():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="voice-rec web UI")
+    ap = argparse.ArgumentParser(description="ushi web UI")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
@@ -1584,7 +1657,7 @@ def main():
         print("Warning: the UI has no login; anyone on the network who can reach this port controls it.")
     import uvicorn
     url = f"http://{args.host}:{args.port}"
-    print(f"voice-rec web UI: {url}")
+    print(f"ushi web UI: {url}")
     if not args.no_browser:
         import threading
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()

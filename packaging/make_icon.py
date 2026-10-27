@@ -1,4 +1,5 @@
-"""Draw the app icon (app/build/icon.icns): dark rounded square, waveform, red record dot."""
+"""Make the app icon (app/build/icon.icns + icon.png) from the ushi artwork:
+the bull's head (packaging/brand/ushi-icon-source.png) on its cream rounded square."""
 import subprocess
 import sys
 import tempfile
@@ -7,42 +8,30 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
 S = 1024
-OUT = Path(__file__).resolve().parent.parent / "app" / "build" / "icon.icns"
+HERE = Path(__file__).resolve().parent
+SOURCE = HERE / "brand" / "ushi-icon-source.png"
+OUT = HERE.parent / "app" / "build" / "icon.icns"
 
 
 def draw() -> Image.Image:
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     m = 100                                       # macOS icon grid: 824 px body, soft shadow
+    body = S - 2 * m
+    radius = 185
     shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle((m, m + 14, S - m, S - m + 14), 185, fill=(0, 0, 0, 120))
+    ImageDraw.Draw(shadow).rounded_rectangle((m, m + 14, S - m, S - m + 14), radius, fill=(36, 37, 47, 90))
     img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(18)))
 
-    body = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    grad = Image.new("RGBA", (S, S))
-    gd = ImageDraw.Draw(grad)
-    for y in range(S):
-        t = y / S
-        gd.line([(0, y), (S, y)], fill=(int(38 - 18 * t), int(42 - 20 * t), int(52 - 24 * t), 255))
-    mask = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((m, m, S - m, S - m), 185, fill=255)
-    body.paste(grad, (0, 0), mask)
-    img.alpha_composite(body)
-
-    d = ImageDraw.Draw(img)
-    heights = [90, 170, 260, 360, 250, 400, 300, 190, 120]
-    bw, gap = 34, 22
-    x0 = S / 2 - (len(heights) * bw + (len(heights) - 1) * gap) / 2 - 70
-    cy = S / 2 + 10
-    for i, h in enumerate(heights):
-        x = x0 + i * (bw + gap)
-        d.rounded_rectangle((x, cy - h / 2, x + bw, cy + h / 2), bw / 2, fill=(236, 238, 242, 255))
-
-    r = 92
-    cx, cyy = S - m - 175, m + 175
-    glow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(glow).ellipse((cx - r - 30, cyy - r - 30, cx + r + 30, cyy + r + 30), fill=(255, 80, 70, 110))
-    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(26)))
-    d.ellipse((cx - r, cyy - r, cx + r, cyy + r), fill=(255, 84, 74, 255))
+    # The artwork's own cream background fills the square (as in the design's cream icon)
+    art = Image.open(SOURCE).convert("RGBA")
+    k = art.width / 1080
+    # a stray grey speck under the bull's chin, bottom right
+    ImageDraw.Draw(art).rectangle((760 * k, 840 * k, 860 * k, 885 * k), fill=(252, 250, 247, 255))
+    art = art.resize((body, body), Image.LANCZOS)
+    mask = Image.new("L", (S * 2, S * 2), 0)        # drawn at 2x for a smooth edge
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, body * 2 - 1, body * 2 - 1), radius * 2, fill=255)
+    mask = mask.crop((0, 0, body * 2, body * 2)).resize((body, body), Image.LANCZOS)
+    img.paste(art, (m, m), mask)
     return img
 
 

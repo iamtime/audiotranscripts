@@ -1,4 +1,4 @@
-/* voice-rec studio - design tokens ──────────────────────────────────────── */
+/* ushi - design tokens ──────────────────────────────────────── */
 :root {
   --bg: #f4f5f7;
   --panel: #ffffff;
@@ -79,11 +79,10 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
   border-bottom: 1px solid var(--line); background: var(--panel);
 }
 .brand { display: flex; align-items: center; gap: 9px; flex: none; }
-.logo { width: 26px; height: 26px; }
-.logo-bg { fill: var(--ink); }
-.logo-bars rect { fill: var(--rec); }
-.brand-name { font-weight: 650; letter-spacing: -.01em; }
-.brand-sub { color: var(--faint); font-weight: 500; margin-left: -4px; }
+/* Fredoka (SIL OFL), subset to the letters of "ushi" */
+@font-face { font-family: 'Fredoka ushi'; font-weight: 600; src: url('/static/img/fredoka-ushi.woff') format('woff'); }
+.logo { width: 30px; height: 30px; border-radius: 50%; background: #fcfaf7; box-shadow: 0 0 0 1px var(--line); }
+.brand-name { font-family: 'Fredoka ushi', Nunito, 'Avenir Next', -apple-system, 'Segoe UI', sans-serif; font-weight: 600; font-size: 21px; letter-spacing: -.02em; line-height: 1; }
 .crumbs { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; }
 .crumb {
   display: flex; align-items: baseline; gap: 7px; padding: 6px 10px; border-radius: 8px; min-width: 0;
@@ -464,7 +463,6 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
   .side-panel { height: 60vh; }
   .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
   .crumbs { order: 3; flex-basis: 100%; }
-  .brand-sub { display: none; }
   .capture-kind { display: none; }
   .control { flex-wrap: wrap; padding: 12px; gap: 12px; }
   .meter { width: 110px; }

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Beautify: turn a raw transcript (+ screenshots) into a FULL annotated HTML
-transcript - every utterance kept, real speakers identified, callouts comparing
-the discussion with what is already known (via claude-context MCP when available).
+transcript - every utterance kept, real speakers identified, SUMMARY callouts per topic.
+An update run compares the new part with what is already known instead (NEW / CONFIRMS /
+UPDATES callouts, via claude-context MCP when available).
 
 Each run produces a new version in projects/<project>/sessions/<sid>/vN.html.
 Modes:
@@ -52,17 +53,26 @@ Create the {mode_title} of a FULL annotated transcript of a recorded session, as
 1. Keep EVERY utterance. Do not summarize, shorten, condense or skip anything, including small talk. Merge fragments into clean speaker turns, fix obvious speech-to-text garbles, and keep each speaker's own wording. Keep the original language of the speech (do not translate).
 2. Work out the real speakers from content, self-introductions, how people address each other, and the screenshots. Use one consistent name per person. If a voice can't be identified, give it a descriptive label like "Client (ops)". Give each turn the time of its first line.
 3. Group the conversation into numbered sections by topic.
-4. Callouts: after each meaningful topic, add <aside class="callout new|confirm|update"> blocks (🆕 NEW / ✅ CONFIRMS / 🔄 UPDATES) exactly as in the style reference, with a "Prior view:" line saying what we knew before and where it came from. {callout_source}
+4. {callout_rule}
 5. Screenshots: place every screenshot near the moment it was taken, as
    <figure class="shot"><img src="RELATIVE_SRC" alt="…" loading="lazy"><figcaption><span class="time">HH:MM:SS</span>what is shown and why it matters</figcaption></figure>
    Use the exact relative src listed for each screenshot above.
-6. Header: title, subtitle, date and time range, "Who's speaking" chips, callout legend, hint. Footer: provenance (source transcript name, number of lines, time range, version {v}, generated {now}) plus notes on speaker attribution and corrected terms.
+6. Header: title, subtitle, date and time range, "Who's speaking" chips, callout legend (only the callout types the document uses), hint. Footer: provenance (source transcript name, number of lines, time range, version {v}, generated {now}) plus notes on speaker attribution and corrected terms.
 7. Self-contained HTML with inline CSS, light and dark mode as in the reference, and no external resources except the screenshot images. Write the content as static HTML, with no JavaScript rendering.
 8. Output file: {out}
 {write_rule}
 9. Don't create, modify or delete any other files.
 10. When finished, reply with one short line only: identified speakers · sections · callouts · screenshots.
 """
+
+# Built from the transcript alone (full / final): nothing to compare with, so no NEW / CONFIRMS / UPDATES.
+CALLOUTS_SUMMARY = """Callouts: after each meaningful topic, add a SUMMARY callout exactly as in the style reference:
+   <aside class="callout summary"><div class="top"><span class="badge summary">📝 SUMMARY</span><span class="lead">One-sentence takeaway.</span></div><p>Key points, decisions, numbers and action items, with <b>key terms</b> in bold.</p></aside>
+   This document is built from the transcript alone, so do NOT compare it with anything: no NEW / CONFIRMS / UPDATES callouts, no "Prior view" lines, no remarks like "not in any prior document" - even when a previous version, earlier documents or a knowledge base are listed above (use those only for names, terms and context). If the style reference has no summary callout, add a neutral one in the same style (light and dark)."""
+
+# Update: the new part is compared with the part already in the document and with prior sources.
+CALLOUTS_COMPARE = """Callouts: after each meaningful topic of the NEW part, add <aside class="callout new|confirm|update"> blocks (🆕 NEW / ✅ CONFIRMS / 🔄 UPDATES) exactly as in the style reference, with a "Prior view:" line saying what we knew before and where it came from (the earlier part of this document, or a prior source). {callout_source}
+   Keep the callouts already in the document (e.g. SUMMARY) as they are. If the file has no styles or legend entries for NEW / CONFIRMS / UPDATES yet, add them from the style reference."""
 
 WRITE_RULE_FULL = """   Create it with the Write tool. For a long transcript, write the header plus the first sections first, then append the remaining sections in order with Edit (insert before the closing footer). Keep going until the file covers the whole transcript up to {t_last}."""
 
@@ -141,11 +151,16 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
                                               from_line=from_line, n_lines=len(raw_lines))
     elif prev and (sdir / prev["html"]).exists():
         prev_block = (f"- Previous version (v{prev['v']}, {prev.get('mode')}): {sdir / prev['html']}\n"
-                      "  Use it only for consistency (speaker names, section names, callouts). "
-                      "The transcript is the source of truth.\n")
+                      "  Use it only for consistency (speaker names, section names, terms); don't compare "
+                      "with it. The transcript is the source of truth.\n")
 
     context_dir = psettings["context_dir"].strip()
-    if context_dir:
+    if context_dir and mode != "update":
+        context_block = (
+            f"- Project knowledge base: {context_dir}\n"
+            "  If the claude-context MCP server is available, search it (search_code with this path) for "
+            "names, terms and background: earlier documents, transcripts, notes.\n")
+    elif context_dir:
         context_block = (
             f"- Project knowledge base: {context_dir}\n"
             "  If the claude-context MCP server is available, search it (search_code with this path) to check "
@@ -154,9 +169,11 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
                           "project knowledge base. Never invent prior knowledge.")
     else:
         context_block = ""
-        callout_source = ("No knowledge base is configured, so compare against earlier documents of this "
-                          "project (if any) and the previous version. Where there is no prior source, "
-                          "use NEW for new facts and decisions. Never invent prior knowledge.")
+        callout_source = ("No knowledge base is configured, so compare against the earlier part of this "
+                          "document and earlier documents of this project (if any). Where there is no prior "
+                          "source, use NEW for new facts and decisions. Never invent prior knowledge.")
+    callout_rule = (CALLOUTS_COMPARE.format(callout_source=callout_source) if mode == "update"
+                    else CALLOUTS_SUMMARY)
 
     notes = load_notes(project).strip()
     notes_block = (
@@ -198,7 +215,7 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
         mode_title=mode_title, input=snapshot, n_lines=len(timed), t_first=t_first, t_last=t_last,
         live_note=live_note, shots=_fmt_shots(shots, sdir), style=style, prev_block=prev_block,
         context_block=context_block, notes_block=notes_block, ext_block=ext_block, docs_block=docs_block,
-        callout_source=callout_source, v=v, now=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        callout_rule=callout_rule, v=v, now=datetime.now().strftime("%Y-%m-%d %H:%M"),
         out=out, write_rule=write_rule,
     )
 

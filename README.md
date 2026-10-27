@@ -1,4 +1,6 @@
-# voice-rec
+<p align="center"><img src="packaging/brand/ushi-logo-main.png" alt="ushi" width="360"></p>
+
+# ushi (formerly voice-rec)
 
 > 📝 **Article about this project:** [hybrismart.com](https://hybrismart.com/2026/10/25/voice-screen-local-models-en/) (also in [Russian](https://hybrismart.com/2026/10/25/voice-screen-local-models/) and [Ukrainian](https://hybrismart.com/2026/10/25/voice-screen-local-models-ua/))
 
@@ -106,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File setup_windows.ps1    # .venv + PyTorch 
 - **Stop** sends `STOP` on the recorder's stdin (Windows has no SIGINT for child processes); Ctrl+C in the console works as before.
 - **ffmpeg** is taken from `PATH`, else the static binary from `imageio-ffmpeg`.
 
-**Windows app.** `Voice Rec-Setup-<version>-x64.exe` installs the web UI as an app with everything inside (Python 3.12 and all dependencies, ffmpeg); models download on first use. Data lives in `%APPDATA%\Voice Rec\data`. Build it in Git Bash (needs [uv](https://docs.astral.sh/uv/) and Node 18+):
+**Windows app.** `ushi-Setup-<version>-x64.exe` installs the web UI as an app with everything inside (Python 3.12 and all dependencies, ffmpeg); models download on first use. Data lives in `%APPDATA%\ushi\data` (`%APPDATA%\Voice Rec\data` when upgrading from a Voice Rec install: the app keeps using it). Build it in Git Bash (needs [uv](https://docs.astral.sh/uv/) and Node 18+):
 
 ```bash
 packaging/build_app_win.sh               # GPU=auto: bundles cuBLAS + cuDNN when this PC has an NVIDIA GPU
@@ -196,7 +198,7 @@ VOICE_REC_PYTHON=/path/to/python ./webui.sh --port 9000 --no-browser
 - **Live transcript**: phrases appear as they're recognized, with a mic level meter and listening / transcribing state.
 - **Screenshots panel**: each capture shows its pipeline status: Captured → Transcript → OCR → Beautified vN. `Snap` takes one without the hotkey.
 - **Capture area**: full screen, a dragged **area**, or a specific **window**. A window is captured even when other windows cover it. Changes apply immediately, even mid-recording, so the UI itself can stay out of screenshots.
-- **Beautify**: builds a *full* annotated transcript (every utterance, real speakers, NEW / CONFIRMS / UPDATES callouts, screenshots inline) through Claude Code (`claude -p`). Every press creates a new version:
+- **Beautify**: builds a *full* annotated transcript (every utterance, real speakers, a SUMMARY callout per topic, screenshots inline; *Update* runs mark the new part with NEW / CONFIRMS / UPDATES callouts against what was known before) through Claude Code (`claude -p`). Every press creates a new version:
   - *Update* (default) extends the previous version with the new material.
   - *Full rebuild* regenerates the whole document.
   - *Final* runs automatically when recording stops. It uses the diarized transcript and is also copied to `docs/`.
@@ -228,9 +230,9 @@ Files: versions in `projects/<p>/sessions/<sid>/vN.html` (+ `manifest.json`, tra
 
 ### macOS app
 
-`Voice Rec.app` is the web UI in its own window, with everything inside: Python 3.12 and all dependencies, the screenshot helper, ffmpeg and (by default) all models -- Silero VAD, Whisper large-v3-turbo, GigaAM v3, Parakeet v3, CLIP, ECAPA, EasyOCR. Nothing has to be installed; it works offline. Apple Silicon (M1 or later), macOS 14+.
+`ushi.app` is the web UI in its own window, with everything inside: Python 3.12 and all dependencies, the screenshot helper, ffmpeg and (by default) all models -- Silero VAD, Whisper large-v3-turbo, GigaAM v3, Parakeet v3, CLIP, ECAPA, EasyOCR. Nothing has to be installed; it works offline. Apple Silicon (M1 or later), macOS 14+.
 
-Build it (`app/dist/Voice Rec-<version>-arm64.dmg`, ~4 GB with all models):
+Build it (`app/dist/ushi-<version>-arm64.dmg`, ~4 GB with all models):
 
 ```bash
 packaging/build_app.sh                 # Python runtime + models + helper + Electron → DMG
@@ -242,9 +244,9 @@ cd app && npm start                    # dev run: repo sources, build/python, bu
 
 The steps are separate scripts: `packaging/build_python.sh` (relocatable [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython in `build/python`, pinned deps from `packaging/requirements-app.txt`), `packaging/fetch_models.py` (clone-copies models from the local caches into `build/models`, downloads the missing ones), `app/` (Electron shell, `electron-builder` config in `app/package.json`).
 
-How it runs: the app starts the bundled `server.py` on a free local port and opens it in a window. Data lives in `~/Library/Application Support/Voice Rec/data` (`projects/`, `.webui/`, `logs/server.log`); **File → Change Data Folder…** points it elsewhere, e.g. at this repo to reuse its projects. On first launch the bundled models are copied into `data/models` (an APFS clone: instant and no extra disk space when the app is in /Applications), so the libraries see a normal writable cache. Beautify and chat use [Claude Code](https://claude.com/claude-code) when it is installed (`claude` is looked up in the login shell's `PATH`), or an LLM API: Gemini, OpenAI, Anthropic, OpenRouter or any OpenAI-compatible host (Ollama, LM Studio, vLLM) -- chosen on first launch or in **Settings → AI** (`llm_api.py`; keys are kept in `.webui/secrets.json`, mode 600, or taken from `GEMINI_API_KEY`, `OPENAI_API_KEY`, ...). Code paths: `VOICE_REC_DATA` (data folder), `VOICE_REC_SILERO_DIR`, `VOICE_REC_RECORDER_PYTHON`; without them the console tools and `server.py` behave exactly as before.
+How it runs: the app starts the bundled `server.py` on a free local port and opens it in a window. Data lives in `~/Library/Application Support/ushi/data` (`…/Voice Rec/data` for an install from before the rename; `projects/`, `.webui/`, `logs/server.log`); **File → Change Data Folder…** points it elsewhere, e.g. at this repo to reuse its projects. On first launch the bundled models are copied into `data/models` (an APFS clone: instant and no extra disk space when the app is in /Applications), so the libraries see a normal writable cache. Beautify and chat use [Claude Code](https://claude.com/claude-code) when it is installed (`claude` is looked up in the login shell's `PATH`), or an LLM API: Gemini, OpenAI, Anthropic, OpenRouter or any OpenAI-compatible host (Ollama, LM Studio, vLLM) -- chosen on first launch or in **Settings → AI** (`llm_api.py`; keys are kept in `.webui/secrets.json`, mode 600, or taken from `GEMINI_API_KEY`, `OPENAI_API_KEY`, ...). Code paths: `VOICE_REC_DATA` (data folder), `VOICE_REC_SILERO_DIR`, `VOICE_REC_RECORDER_PYTHON`; without them the console tools and `server.py` behave exactly as before.
 
-Signing: with a "Developer ID Application" certificate in the keychain the build is signed with it, and notarized when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are set -- then it opens on any Mac with no warnings. Without one the app is signed ad hoc: on another Mac the first launch is blocked as from an unidentified developer -- open it once via right-click → **Open** (macOS 15+: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr "/Applications/Voice Rec.app"`. macOS then asks for Microphone, Screen Recording (first screenshot) and Accessibility (selection capture) permissions; **Help** has shortcuts to these settings.
+Signing: with a "Developer ID Application" certificate in the keychain the build is signed with it, and notarized when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are set -- then it opens on any Mac with no warnings. Without one the app is signed ad hoc: on another Mac the first launch is blocked as from an unidentified developer -- open it once via right-click → **Open** (macOS 15+: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr "/Applications/ushi.app"`. macOS then asks for Microphone, Screen Recording (first screenshot) and Accessibility (selection capture) permissions; **Help** has shortcuts to these settings.
 
 ### Re-diarization
 

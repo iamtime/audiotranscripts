@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import queue
 import re
 from datetime import datetime, timedelta
@@ -901,7 +902,10 @@ def main():
                         help="Write structured JSON-lines events to this file")
     parser.add_argument("--control-stdin", action="store_true",
                         help="Accept commands on stdin: SNAP, STOP, PAUSE <sec>, MUTE, UNMUTE, CUT "
-                             "(end the current phrase now), AUTO ON/OFF")
+                             "(end the current phrase now), AUTO ON/OFF, MINUTES <min> (new auto-stop)")
+    parser.add_argument("--wait-go", action="store_true",
+                        help="With --control-stdin: load the models, report 'ready' and start capturing "
+                             "only after GO on stdin (STOP or end of input quits)")
     parser.add_argument("--capture-config", default=None,
                         help="JSON capture config for the screenshot helper (area / window)")
     parser.add_argument("--continue-session", default=None, metavar="TIMESTAMP",
@@ -979,6 +983,50 @@ def main():
                       file=sys.stderr)
                 sys.exit(1)
 
+    asr_engine, vad_model = load_models(args.engine, args.asr_model)
+    if args.vocab_file and not asr_engine.supports_hotwords and not args.vocab_correct:
+        print(f"[vocab] {args.engine} has no hotwords; vocab hints are ignored (add --vocab-correct "
+              "to apply the notes' corrections to the output)")
+
+    embedder = None
+    if enable_diarization:
+        print("Loading speaker embedding model (ECAPA-TDNN)...")
+        events.emit("status", state="loading", detail="Loading speaker model")
+        embedder = SpeakerEmbedder(device="cuda" if DEVICE == "cuda" and torch.cuda.is_available() else "cpu")
+        print("Speaker model loaded.")
+        if num_speakers:
+            print(f"Diarization: {num_speakers} speaker(s)")
+        else:
+            print(f"Diarization: auto (threshold={args.cluster_threshold})")
+
+    # Models are in memory: wait for the go-ahead so a long load doesn't start
+    # recording while nobody is there. The session (and its clock) starts after GO.
+    if args.wait_go and args.control_stdin:
+        print("Models loaded. Waiting for GO on stdin...")
+        events.emit("status", state="ready", detail="Models loaded")
+        try:
+            while True:
+                line = sys.stdin.readline()
+                cmd = line.strip().upper()
+                if not line or cmd == "STOP":
+                    print("Cancelled before recording started.")
+                    sys.exit(0)
+                if cmd == "GO":
+                    break
+                if cmd.startswith("PAUSE "):
+                    try:
+                        SILENCE_DURATION_MS = int(max(0.2, min(10.0, float(cmd.split()[1]))) * 1000)
+                    except ValueError:
+                        pass
+                elif cmd.startswith("MINUTES "):
+                    try:
+                        args.minutes = max(1.0, float(cmd.split()[1]))
+                    except ValueError:
+                        pass
+        except KeyboardInterrupt:
+            print("Cancelled before recording started.")
+            sys.exit(0)
+
     global screenshot_dir, save_audio_flag
 
     project_dir = Path("projects") / args.project
@@ -1020,21 +1068,6 @@ def main():
                 start_time=session_data["start_time"].isoformat(),
                 diarization=enable_diarization, continued=prefix_text is not None, source=args.source)
 
-    asr_engine, vad_model = load_models(args.engine, args.asr_model)
-    if args.vocab_file and not asr_engine.supports_hotwords and not args.vocab_correct:
-        print(f"[vocab] {args.engine} has no hotwords; vocab hints are ignored (add --vocab-correct "
-              "to apply the notes' corrections to the output)")
-
-    embedder = None
-    if enable_diarization:
-        print("Loading speaker embedding model (ECAPA-TDNN)...")
-        events.emit("status", state="loading", detail="Loading speaker model")
-        embedder = SpeakerEmbedder(device="cuda" if DEVICE == "cuda" and torch.cuda.is_available() else "cpu")
-        print("Speaker model loaded.")
-        if num_speakers:
-            print(f"Diarization: {num_speakers} speaker(s)")
-        else:
-            print(f"Diarization: auto (threshold={args.cluster_threshold})")
 
     print(f"Project: {args.project} ({project_dir.resolve()})")
     if args.engine != "whisper":
@@ -1162,6 +1195,28 @@ def main():
     if args.auto_frames > 0:
         set_auto_frames(True)
 
+    # Auto-stop: a deadline (not a fixed Timer) so MINUTES can move it while recording
+    listen_start = time.monotonic()
+    auto_stop_at = listen_start + args.minutes * 60
+
+    def set_auto_stop(minutes: float):
+        nonlocal auto_stop_at
+        args.minutes = max(1.0, minutes)
+        auto_stop_at = listen_start + args.minutes * 60
+        print(f"\r\033[K[auto-stop] {args.minutes:g} min")
+        events.emit("minutes", minutes=args.minutes)
+
+    def auto_stop_watch():
+        while not stop_event.wait(1.0):
+            if time.monotonic() >= auto_stop_at:
+                print(f"\n[auto-stop] {args.minutes:g} min elapsed, finalizing...")
+                events.emit("status", state="stopping", detail="auto-stop")
+                stop_event.set()
+                return
+
+    if source_kind != "file":
+        threading.Thread(target=auto_stop_watch, daemon=True).start()
+
     if args.control_stdin:
         def control_reader():
             for line in sys.stdin:
@@ -1194,21 +1249,15 @@ def main():
                     cut_requests += 1
                 elif cmd in ("AUTO ON", "AUTO OFF"):
                     set_auto_frames(cmd == "AUTO ON")
+                elif cmd.startswith("MINUTES "):
+                    try:
+                        set_auto_stop(float(cmd.split()[1]))
+                    except ValueError:
+                        pass
                 elif cmd == "STOP":
                     events.emit("status", state="stopping")
                     stop_event.set()
         threading.Thread(target=control_reader, daemon=True).start()
-    # Auto-stop timer
-    auto_stop_sec = args.minutes * 60
-    auto_stop_timer = threading.Timer(auto_stop_sec, lambda: (
-        print(f"\n[auto-stop] {args.minutes} min elapsed, finalizing..."),
-        events.emit("status", state="stopping", detail="auto-stop"),
-        stop_event.set(),
-    ))
-    auto_stop_timer.daemon = True
-    if source_kind != "file":
-        auto_stop_timer.start()
-
     what = {"mic": "default microphone", "app": f"app audio of {source_arg}",
             "app+mic": f"app audio of {source_arg} [Them] + default microphone [Me]",
             "file": f"audio file {Path(source_arg).name}"}[source_kind]
@@ -1223,7 +1272,6 @@ def main():
         vad_loop(vad_model, audio_queue, main_label)
     finally:
         stop_event.set()        # the audio file ended, or a stop was requested
-        auto_stop_timer.cancel()
         if screenshot_proc is not None:
             screenshot_proc.terminate()
         if app_proc is not None:

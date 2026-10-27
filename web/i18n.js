@@ -1,4 +1,4 @@
-/* voice-rec studio - UI translation layer.
+/* ushi - UI translation layer.
  *
  * Self-contained: app.js renders English; this file translates the rendered DOM (text nodes and
  * a few attributes) from exact English strings, and keeps translating whatever app.js renders
@@ -369,7 +369,7 @@
         'Offer to build the final version when recording stops': 'Предлагать собрать финальную версию после остановки записи',
         'Knowledge folder': 'Папка знаний',
         'Claude Code runs in this folder, so the MCP servers configured there (e.g.': 'Claude Code запускается в этой папке, поэтому настроенные там MCP-серверы (например,',
-        ') power the NEW / CONFIRMS / UPDATES callouts.': ') дают выноски NEW / CONFIRMS / UPDATES.',
+        ') power the NEW / CONFIRMS / UPDATES callouts of Update runs.': ') дают выноски NEW / CONFIRMS / UPDATES при обновлении (Update).',
         'Style reference': 'Образец стиля',
         'Built-in annotated-transcript style': 'Встроенный стиль аннотированного транскрипта',
         'An HTML document whose look to copy (style only, never its content).': 'HTML-документ, оформление которого нужно повторить (только стиль, не содержимое).',
@@ -429,7 +429,7 @@
         'Enter the API key': 'Введите API-ключ',
         'Enter the host (base URL)': 'Введите хост (base URL)',
         'Enter the model name (Test lists the available ones)': 'Введите название модели («Проверить» покажет доступные)',
-        'Welcome to Voice Rec': 'Добро пожаловать в Voice Rec',
+        'Welcome to ushi': 'Добро пожаловать в ushi',
         'Recording and transcription work fully offline. To turn transcripts into annotated documents (Beautify) and to chat about them, choose an AI. You can change it later in Settings.':
           'Запись и распознавание работают полностью офлайн. Чтобы превращать транскрипты в аннотированные документы («Оформить») и обсуждать их в чате, выберите ИИ. Его можно сменить позже в настройках.',
         'Beautify and chat use this AI. Recording does not need it.': 'Этот ИИ используется для оформления и чата. Для записи он не нужен.',
@@ -480,6 +480,15 @@
         'Beautify is already running for this session': 'Оформление этой сессии уже выполняется',
         'Still answering the previous question': 'Ещё отвечаю на предыдущий вопрос',
         'Starting recognizer': 'Запуск распознавателя',
+        'Starting capture': 'Запуск записи',
+        "Show this version's HTML file in its folder": 'Показать HTML-файл этой версии в папке',
+        'Models loaded': 'Модели загружены',
+        'Ready to record': 'Можно начинать запись',
+        'Models are loaded · recording starts when you press Start': 'Модели загружены · запись начнётся, когда нажмёте «Начать запись»',
+        'Models are loaded. Recording has not started yet: start it now?': 'Модели загружены. Запись ещё не началась - начать сейчас?',
+        'Ready': 'Готово',
+        'models are loaded · press Start recording': 'модели загружены · нажмите «Начать запись»',
+        'Recording stops on its own after this many minutes. Can be changed while recording.': 'Через сколько минут запись остановится сама. Можно менять во время записи.',
         'Session finished': 'Сессия завершена',
         'Speakers assigned': 'Спикеры определены',
         'Diarization': 'Разделение по спикерам',
@@ -596,6 +605,8 @@
         [/^Recognizer exited with code (-?\d+)$/, 'Распознаватель завершился с кодом $1'],
         [/^exit code (-?\d+)$/, 'код выхода $1'],
         [/^Loading Whisper (.+)$/, 'Загрузка Whisper $1'],
+        [/^Auto-stop set to (\d+) min$/, 'Автостоп: $1 мин'],
+        [/^Already recording for (\d+) min: pick a later auto-stop$/, 'Запись идёт уже $1 мин: выберите автостоп позже'],
         [/^Clustering (\d+) voice samples$/, (n) => `Кластеризация ${cnt(n, 'образца', 'образцов', 'образцов')} голоса`],
         [/^Labelling (\d+) speakers$/, (n) => `Разметка: ${cnt(n, 'спикер', 'спикера', 'спикеров')}`],
         [/^Loading (.+)$/, 'Загрузка $1'],

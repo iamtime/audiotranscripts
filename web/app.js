@@ -1,4 +1,4 @@
-/* voice-rec studio - client */
+/* ushi - client */
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -383,6 +383,16 @@ function renderControl() {
     $('#dismissErr').onclick = () => { st.recorder = { state: 'idle' }; renderControl(); };
     return;
   }
+  if (r.state === 'ready' && !st.starting) {
+    el.innerHTML = `
+      <button class="rec-btn" id="recBtn"><span class="dot"></span>Start recording</button>
+      <div><div class="state-title">Ready to record</div>
+        <div class="state-sub">Models are loaded · recording starts when you press Start</div></div>
+      <div class="spacer"></div><button class="ghost-btn" id="cancelReady">Cancel</button>`;
+    $('#recBtn').onclick = startRecording;
+    $('#cancelReady').onclick = cancelReady;
+    return;
+  }
   if (st.starting || r.state === 'loading') {
     el.innerHTML = `
       <button class="rec-btn busy" disabled><span class="spin-w"></span>Starting recording…</button>
@@ -407,6 +417,7 @@ function renderControl() {
     <canvas class="meter" id="meter" width="336" height="68"></canvas>
     <div class="pipe-status" id="pipeStatus"></div>
     ${pauseControl(st.pipeline.pause || s.pause || 1.5)}
+    ${isFile ? '' : minutesControl(r.minutes || s.minutes || 180)}
     ${r.engine && r.engine !== 'whisper' ? `<span class="chip" title="Speech recognition engine">${esc(ENGINES[r.engine]?.short || r.engine)}</span>` : ''}
     ${r.lang ? `<span class="chip" title="Detected language">${esc(r.lang.toUpperCase())}</span>` : ''}
     ${r.diarization ? '<span class="chip" title="Speaker diarization runs after the session">SPEAKERS</span>' : ''}
@@ -422,6 +433,7 @@ function renderControl() {
     $('#snapBtn').onclick = snap;
   }
   bindPause();
+  bindMinutes();
   renderPipeline();
   tickTimer();
 }
@@ -553,6 +565,30 @@ function bindPause() {
   };
 }
 
+function minutesControl(v) {
+  return `<div class="opt" title="Recording stops on its own after this many minutes. Can be changed while recording.">
+    <span class="opt-label">Auto-stop</span><input class="field num" id="minLiveInp" type="number" min="1" step="1" value="${esc(Math.round(+v))}"> min</div>`;
+}
+function bindMinutes() {
+  const inp = $('#minLiveInp'); if (!inp) return;
+  inp.onchange = async () => {
+    const r = st.recorder;
+    const v = Math.max(1, Math.round(+inp.value || 180));
+    const elapsed = (Date.now() / 1000 - (r.listening_at || r.started_at || Date.now() / 1000)) / 60;
+    if (v <= elapsed) {
+      inp.value = Math.round(r.minutes || 180);
+      toast(`Already recording for ${Math.floor(elapsed)} min: pick a later auto-stop`, 'error');
+      return;
+    }
+    inp.value = v;
+    st.settings.minutes = v;
+    try {
+      const res = await api('POST', '/api/record/minutes', { minutes: v });
+      toast(`Auto-stop set to ${Math.round(res.minutes)} min`, 'ok');
+    } catch (e) { fail(e); }
+  };
+}
+
 const fmtSec = sec => (sec >= 60 ? fmtDur(sec) : `${(+sec || 0).toFixed(1)} s`);
 const queuedSec = () => st.pipeline.pending.reduce((a, c) => a + (c.duration || 0), 0);
 
@@ -565,7 +601,7 @@ function renderPipeline() {
     const l1 = st.recorder.muted
       ? `<span class="a-dot paused"></span><b>Paused</b><span class="pl-sub">${(st.recorder.source || 'mic') === 'mic' ? 'microphone' : 'audio'} muted · session continues</span>`
       : speaking
-      ? `<span class="a-dot speech"></span><b>Speech ${fmtSec(pl.speech)}</b><span class="pl-sub">${isFile ? 'in the file' : 'recording'} · sent after a ${(pl.pause || 1.5).toFixed(1)} s pause${isFile ? '' : ' · <button class="link-btn" id="cutBtn" title="End this phrase now and send it to the recognizer, without waiting for the pause">Cut</button>'}</span>`
+      ? `<span class="a-dot speech"></span><b>Speech ${fmtSec(pl.speech)}</b><span class="pl-sub">${isFile ? 'in the file' : 'recording'} · sent after a ${(pl.pause || 1.5).toFixed(1)} s pause${isFile ? '' : ' · <button class="link-btn cut-btn" title="End this phrase now and send it to the recognizer, without waiting for the pause">Cut</button>'}</span>`
       : `<span class="a-dot"></span><b>${isFile ? 'Reading the file' : 'Listening'}</b><span class="pl-sub">waiting for speech</span>`;
     let l2, pct = null;
     if (pl.current) {
@@ -659,6 +695,12 @@ async function startRecording() {
   const s = st.settings;
   st.starting = true;
   renderControl();
+  if (st.recorder.state === 'ready') {         // models already loaded: start right away
+    closeReadyPrompt();
+    try { await api('POST', '/api/record/start', { minutes: s.minutes || 180, pause: s.pause || 1.5 }); }
+    catch (e) { st.starting = false; renderControl(); fail(e); }
+    return;
+  }
   try {
     const engine = s.engine || 'whisper';
     if (engineBlocksLang(engine, s.lang)) s.lang = 'ru';
@@ -683,6 +725,26 @@ async function startRecording() {
     });
   } catch (e) { st.starting = false; renderControl(); fail(e); }
 }
+async function cancelReady() {
+  closeReadyPrompt();
+  try { await api('POST', '/api/record/stop'); } catch (e) { fail(e); }
+}
+// The models took a while to load: don't start recording behind the user's back, ask.
+// Closing this without an answer leaves the Start button, which then starts at once.
+function offerReady() {
+  openModal(`<div class="modal-head"><h2>Ready to record</h2><p>Models are loaded. Recording has not started yet: start it now?</p></div>
+    <div class="modal-foot"><button class="ghost-btn" id="readyCancel">Cancel</button><button class="ghost-btn" data-close>Later</button><button class="primary-btn" id="readyGo">Start recording</button></div>`,
+  root => {
+    $('[data-close]', root).onclick = closeModal;
+    $('#readyCancel', root).onclick = cancelReady;
+    $('#readyGo', root).onclick = startRecording;
+    $('#readyGo', root).focus();
+  });
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try { new Notification('ushi: ready to record', { body: 'Models are loaded. Recording starts when you press Start.' }); } catch (e) { /* not supported here */ }
+  }
+}
+function closeReadyPrompt() { if ($('#readyGo')) closeModal(); }
 async function stopRecording() {
   if (st.recorder.state !== 'listening') return;
   st.recorder = { ...st.recorder, state: 'stopping', detail: 'Stopping' };
@@ -702,8 +764,8 @@ async function toggleAutoFrames() {
   catch (e) { fail(e); if (btn) btn.disabled = false; }
 }
 async function cutPhrase() { try { await api('POST', '/api/record/cut'); } catch (e) { fail(e); } }
-// The pipeline status is re-rendered several times a second, so the Cut link is delegated.
-document.addEventListener('click', e => { if (e.target.closest('#cutBtn')) cutPhrase(); });
+// The pipeline status is re-rendered several times a second, so the Cut links are delegated.
+document.addEventListener('click', e => { if (e.target.closest('.cut-btn')) cutPhrase(); });
 async function snap() { try { await api('POST', '/api/record/snap'); } catch (e) { fail(e); } }
 $('#snapSideBtn').onclick = snap;
 
@@ -892,6 +954,7 @@ function appendEntry(idx, entry) {
   if (st.follow) box.scrollTop = box.scrollHeight;
 }
 
+const CUT_BTN = '<button class="link-btn cut-btn" title="End this phrase now and send it to the recognizer, without waiting for the pause">Cut</button>';
 function renderGhost() {
   const g = $('#ghost'); if (!g) return;
   const r = st.recorder;
@@ -900,13 +963,15 @@ function renderGhost() {
   let inner;
   if (r.state === 'stopping' || r.state === 'finalizing') {
     inner = `<span class="spinner tiny"></span><span>Finishing…</span><span class="pl-sub">${esc(r.detail || 'transcribing the remaining speech')}</span>`;
+  } else if (r.state === 'ready') {
+    inner = `<span class="a-dot"></span><span>Ready</span><span class="pl-sub">models are loaded · press Start recording</span>`;
   } else if (r.state !== 'listening') {
     inner = `<span class="spinner tiny"></span><span>Starting…</span><span class="pl-sub">${esc(r.detail || 'loading models')}</span>`;
   } else if (r.muted) {
     inner = `<span class="a-dot paused"></span><span>Paused</span><span class="pl-sub">microphone is muted · press Resume to continue</span>`;
   } else if (sp != null) {
     inner = `<span class="wave"><i></i><i></i><i></i><i></i></span><span>Speaking · ${fmtSec(sp)}</span>
-      <span class="pl-sub">goes to transcription after a ${(st.pipeline.pause || 1.5).toFixed(1)} s pause</span>`;
+      <span class="pl-sub">goes to transcription after a ${(st.pipeline.pause || 1.5).toFixed(1)} s pause</span>${r.source === 'file' ? '' : CUT_BTN}`;
   } else {
     inner = `<span class="listen-dot"></span><span class="shimmer">Listening…</span><span class="pl-sub">waiting for speech</span>`;
   }
@@ -1377,8 +1442,11 @@ function renderDoc() {
     </div>
     <div class="spacer"></div>
     ${sel.docs_url ? `<a class="ghost-btn small" href="${esc(sel.docs_url)}" target="_blank" title="Copy saved in the project's docs/ folder">${ICON.doc}docs/ copy</a>` : ''}
-    <a class="ghost-btn small" href="${esc(sel.url)}" target="_blank">${ICON.open}Open</a>`;
+    <button class="ghost-btn small" id="docReveal" title="Show this version's HTML file in its folder">${ICON.open}Open</button>`;
   $('#verSel').onchange = e => { st.docVersion = +e.target.value; renderDoc(); };
+  $('#docReveal').onclick = async () => {
+    try { await api('POST', '/api/reveal', { url: sel.url }); } catch (e) { fail(e); }
+  };
   const src = `${sel.url}?v=${encodeURIComponent(sel.finished || sel.v)}`;
   if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
 }
@@ -1640,7 +1708,7 @@ async function openSettings() {
       </fieldset>
       ${st.project ? `<fieldset class="fset"><legend>Project · ${esc(st.project)}</legend>
         <div class="frow"><label>Knowledge folder</label><input class="field" id="setCtx" value="${esc(ps.context_dir)}" placeholder="/Users/you/Documents/CLIENT">
-          <div class="help">Claude Code runs in this folder, so the MCP servers configured there (e.g. <b>claude-context</b>) power the NEW / CONFIRMS / UPDATES callouts.</div></div>
+          <div class="help">Claude Code runs in this folder, so the MCP servers configured there (e.g. <b>claude-context</b>) power the NEW / CONFIRMS / UPDATES callouts of Update runs.</div></div>
         <div class="frow"><label>Style reference</label><input class="field" id="setStyle" value="${esc(ps.style_reference)}" placeholder="Built-in annotated-transcript style">
           <div class="help">An HTML document whose look to copy (style only, never its content).</div></div>
         <div class="frow"><label>Notes</label><div class="help" style="grid-column:2;margin:6px 0 0">Context and corrections live in the <b>Notes</b> tab (<code>notes.md</code> in the project folder).</div></div>
@@ -1782,7 +1850,7 @@ async function openAiSetup({ firstRun = false } = {}) {
   try { a = await api('GET', '/api/ai'); } catch (e) { fail(e); return; }
   const picker = aiPicker(a);
   openModal(`
-    <div class="modal-head"><h2>${firstRun ? 'Welcome to Voice Rec' : 'AI for Beautify and chat'}</h2>
+    <div class="modal-head"><h2>${firstRun ? 'Welcome to ushi' : 'AI for Beautify and chat'}</h2>
       <p>${firstRun ? 'Recording and transcription work fully offline. To turn transcripts into annotated documents (Beautify) and to chat about them, choose an AI. You can change it later in Settings.' : 'Beautify and chat use this AI. Recording does not need it.'}</p></div>
     <div class="modal-body">${picker.html}</div>
     <div class="modal-foot">${firstRun ? '<button class="ghost-btn" id="aiLater">Later</button>' : '<button class="ghost-btn" data-close>Cancel</button>'}<button class="primary-btn" id="aiSave">Save</button></div>`,
@@ -1898,6 +1966,8 @@ async function handle(m) {
       st.recorder = m;
       if (m.pipeline) st.pipeline = m.pipeline;
       if (m.active || m.state === 'error') st.starting = false;
+      if (m.state === 'ready' && prev.state !== 'ready') offerReady();
+      else if (m.state !== 'ready') closeReadyPrompt();
       // a live session got its id (new, or the continued one) → show it live
       if (m.active && m.sid && (m.sid !== prev.sid || !prev.active || !isLive())) {
         if (st.project !== m.project) { await selectProject(m.project, { keepSession: true }); }

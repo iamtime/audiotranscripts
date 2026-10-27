@@ -1,4 +1,4 @@
-# Set up voice-rec on Windows: a Python 3.12 virtual env in .venv, PyTorch (CUDA build when
+# Set up ushi on Windows: a Python 3.12 virtual env in .venv, PyTorch (CUDA build when
 # an NVIDIA GPU is present, otherwise CPU) and the dependencies. Then start it with webui.bat.
 #
 #   powershell -ExecutionPolicy Bypass -File setup_windows.ps1          # auto: GPU if available

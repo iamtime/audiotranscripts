@@ -1,5 +1,5 @@
 @echo off
-rem Launch the voice-rec web UI (http://127.0.0.1:8765) on Windows.
+rem Launch the ushi web UI (http://127.0.0.1:8765) on Windows.
 rem Uses .venv (setup_windows.ps1 creates it), or %VOICE_REC_PYTHON%, or python on PATH.
 setlocal
 cd /d "%~dp0"

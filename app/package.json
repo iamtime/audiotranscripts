@@ -1,6 +1,6 @@
 {
-  "name": "voice-rec",
-  "productName": "Voice Rec",
+  "name": "ushi",
+  "productName": "ushi",
   "version": "1.1.0",
   "description": "Local real-time speech-to-text with screenshots",
   "main": "main.js",
@@ -13,7 +13,7 @@
   },
   "build": {
     "appId": "com.raufaliev.voicerec",
-    "productName": "Voice Rec",
+    "productName": "ushi",
     "copyright": "Rauf Aliev",
     "directories": {
       "output": "dist",
@@ -22,6 +22,7 @@
     "files": [
       "main.js",
       "splash.html",
+      "splash-logo.jpg",
       "package.json"
     ],
     "extraResources": [
@@ -56,16 +57,16 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Voice Rec transcribes your speech locally, on this Mac.",
-        "NSScreenCaptureUsageDescription": "Voice Rec takes screenshots of what you are talking about.",
-        "NSAudioCaptureUsageDescription": "Voice Rec transcribes the audio of the app you choose (e.g. a call), locally on this Mac.",
-        "NSAppleEventsUsageDescription": "Voice Rec copies the selected text when you press the capture hotkey.",
+        "NSMicrophoneUsageDescription": "ushi transcribes your speech locally, on this Mac.",
+        "NSScreenCaptureUsageDescription": "ushi takes screenshots of what you are talking about.",
+        "NSAudioCaptureUsageDescription": "ushi transcribes the audio of the app you choose (e.g. a call), locally on this Mac.",
+        "NSAppleEventsUsageDescription": "ushi copies the selected text when you press the capture hotkey.",
         "LSApplicationCategoryType": "public.app-category.productivity"
       }
     },
     "dmg": {
       "format": "ULFO",
-      "title": "Voice Rec",
+      "title": "ushi",
       "contents": [
         {
           "x": 140,
