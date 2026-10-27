@@ -1,7 +1,7 @@
 {
   "name": "voice-rec",
   "productName": "Voice Rec",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local real-time speech-to-text with screenshots",
   "main": "main.js",
   "private": true,
