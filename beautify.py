@@ -15,6 +15,7 @@ Used by server.py; can also be run from the console:
 """
 
 import argparse
+import base64
 import os
 import re
 import shutil
@@ -28,7 +29,7 @@ import claude_cli
 import llm_api
 import external
 from sessions import (
-    DATA_ROOT, ROOT, beautify_text, latest_version, load_manifest, load_notes, load_project_settings, load_settings, notes_path,
+    DATA_ROOT, ROOT, beautify_text, frames_dir, latest_version, load_manifest, load_notes, load_project_settings, load_settings, notes_path,
     parse_transcript, project_dir, save_manifest, session_dir, shot_time,
     sid_datetime, transcript_path,
 )
@@ -239,6 +240,7 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
                    **({str(sdir / prev["html"]): f"Reading previous version v{prev['v']}"} if prev else {}),
                    **{str(p): "Reading the external transcript" for p in ext_files}},
         "ext_files": ext_files, "shot_count": len(shots), "lines": len(timed), "t_last": t_last,
+        "shots": [{**x, "src": _rel(Path(x["path"]), sdir)} for x in shots],
     }
 
 
@@ -293,6 +295,8 @@ def finish(project: str, sid: str, v: int, status: str, **info) -> dict:
 
 
 def _copy_to_docs(project: str, sid: str, out: Path, rec: dict, manifest: dict) -> Path:
+    """Save the final document to docs/ as one self-contained file (images embedded as
+    data: URIs, so it opens anywhere) plus a light "-text.html" copy without the images."""
     docs = project_dir(project) / "docs"
     docs.mkdir(parents=True, exist_ok=True)
     existing = [x.get("docs_copy") for x in manifest["versions"] if x.get("docs_copy")]
@@ -303,11 +307,38 @@ def _copy_to_docs(project: str, sid: str, out: Path, rec: dict, manifest: dict) 
         date = dt.strftime("%Y-%m-%d") if dt else sid
         target = docs / f"{date}-{_slug(rec.get('title', ''))}-annotated-transcript.html"
     html = out.read_text(encoding="utf-8")
-    # vN.html lives in sessions/<sid>/, docs/ is one level closer to screenshots/
-    html = html.replace('src="../../screenshots/', 'src="../screenshots/')
-    html = html.replace('src="../../frames/', 'src="../frames/')
-    target.write_text(html, encoding="utf-8")
+    target.write_text(_embed_images(html, out.parent, project, sid), encoding="utf-8")
+    text_only = re.sub(r'\s*<figure class="shot".*?</figure>', "", html, flags=re.S | re.I)
+    target.with_name(target.stem + "-text.html").write_text(text_only, encoding="utf-8")
     return target
+
+
+IMG_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def _find_image(src: str, base: Path, project: str, sid: str) -> Path | None:
+    """The file an <img src> means. A model sometimes gets the folder wrong (an auto frame
+    under screenshots/), so fall back to the file name in screenshots/ and frames/<sid>/."""
+    if src.startswith(("data:", "http:", "https:")):
+        return None
+    p = (base / src).resolve()
+    if p.is_file():
+        return p
+    name = Path(src).name
+    for d in (project_dir(project) / "screenshots", frames_dir(project, sid)):
+        if (d / name).is_file():
+            return d / name
+    return next(project_dir(project).glob(f"frames/*/{name}"), None)
+
+
+def _embed_images(html: str, base: Path, project: str, sid: str) -> str:
+    def repl(m):
+        p = _find_image(m.group(2), base, project, sid)
+        mime = p and IMG_TYPES.get(p.suffix.lower())
+        if not mime:
+            return m.group(0)
+        return f'{m.group(1)}data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}{m.group(3)}'
+    return re.sub(r'(<img\b[^>]*?\bsrc=")([^"]+)(")', repl, html, flags=re.I)
 
 
 # ── API engine (no Claude Code): single-shot generation via Gemini/OpenAI ───
@@ -318,15 +349,17 @@ def run_api(spec: dict, on_progress=None) -> None:
     settings = spec["settings"]
     text = spec["input"].read_text(encoding="utf-8", errors="replace")
     ocr_parts = []
-    for name in load_manifest(spec["project"], spec["sid"])["versions"][-1]["screenshots"]:
-        txt = project_dir(spec["project"]) / "screenshots" / Path(name).with_suffix(".txt")
+    for shot in spec["shots"]:
+        txt = Path(shot["path"]).with_suffix(".txt")
         if txt.exists():
-            ocr_parts.append(f"--- {name} ---\n{txt.read_text(encoding='utf-8', errors='replace')}")
+            ocr_parts.append(f"--- {Path(shot['path']).name} ---\n{txt.read_text(encoding='utf-8', errors='replace')}")
+    # Auto frames live in frames/<sid>/, not screenshots/: give the model every src as is.
+    srcs = "".join(f"  {x['time']}  {Path(x['path']).name}  → src=\"{x['src']}\"\n" for x in spec["shots"])
     ext = "".join(f"--- {p.name} ---\n{p.read_text(encoding='utf-8', errors='replace')}\n"
                   for p in spec.get("ext_files", []))
     prompt = (spec["prompt"].split("## Requirements")[1]
               .replace("Use the exact relative src listed for each screenshot above.",
-                       "Use src=\"../../screenshots/<file name>\".")
+                       "Use the exact src listed for each screenshot in SCREENSHOTS below.")
               .split("8. Output file:")[0])
     dt = sid_datetime(spec["sid"])
     prompt = ("Create a FULL annotated transcript as one self-contained HTML document.\n"
@@ -334,6 +367,7 @@ def run_api(spec: dict, on_progress=None) -> None:
               + "\n## Requirements"
               + prompt + "\nReply with the HTML document only, with no markdown fences.\n\n"
               f"## STYLE REFERENCE (structure/CSS only)\n{spec['style'].read_text(encoding='utf-8')}\n\n"
+              f"## SCREENSHOTS (time, file, src)\n{srcs or '(none)'}\n"
               f"## SCREENSHOT OCR\n" + ("\n\n".join(ocr_parts) or "(none)") + f"\n\n## RAW TRANSCRIPT\n{text}\n"
               + (f"\n## EXTERNAL TRANSCRIPT OF THE SAME MEETING (reliable speaker names, often wrong terms; "
                  f"use it to attribute speakers, keep our terms and times)\n{ext}" if ext else ""))

@@ -764,8 +764,10 @@ async function toggleAutoFrames() {
   catch (e) { fail(e); if (btn) btn.disabled = false; }
 }
 async function cutPhrase() { try { await api('POST', '/api/record/cut'); } catch (e) { fail(e); } }
-// The pipeline status is re-rendered several times a second, so the Cut links are delegated.
-document.addEventListener('click', e => { if (e.target.closest('.cut-btn')) cutPhrase(); });
+// The pipeline status is re-rendered several times a second, so the Cut links are delegated,
+// on pointerdown: a click needs press and release on the same node, and a re-render between
+// the two replaces it, so the click never fires.
+document.addEventListener('pointerdown', e => { if (e.button === 0 && e.target.closest('.cut-btn')) { e.preventDefault(); cutPhrase(); } });
 async function snap() { try { await api('POST', '/api/record/snap'); } catch (e) { fail(e); } }
 $('#snapSideBtn').onclick = snap;
 

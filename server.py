@@ -576,6 +576,9 @@ class BeautifyJobs:
         live = recorder.active and recorder.project == project and recorder.sid == sid
         if mode == "final" and live:
             mode = "full"
+        if mode == "final" and await asyncio.to_thread(SF.auto_select, project, sid):
+            hub.emit({"type": "visibility", "project": project, "sid": sid,
+                      "visibility": S.load_visibility(project, sid)})
         spec = await asyncio.to_thread(beautify.prepare, project, sid, mode, live)
         job = {"project": project, "sid": sid, "v": spec["v"], "mode": spec["mode"], "status": "running",
                "started": time.time(), "steps": [], "chars": 0, "summary": "", "error": "",

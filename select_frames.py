@@ -155,6 +155,16 @@ def select(project: str, sid: str, n: int = 10, apply: bool = True) -> dict:
     return result
 
 
+def auto_select(project: str, sid: str, n: int = 10) -> bool:
+    """Pick before the final Beautify unless the user already did: no Pick run and no frame
+    hidden by hand. Otherwise every auto frame would go into the document."""
+    if not S.load_scenes(project, sid) or (frames_dir(project, sid) / "selection.json").exists() \
+            or S.load_visibility(project, sid)["frames"]:
+        return False
+    select(project, sid, n)
+    return True
+
+
 def frames_payload(project: str, sid: str) -> dict:
     """Scenes (+ the last selection) for the web UI."""
     scenes = load_scenes(project, sid)
