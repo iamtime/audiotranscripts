@@ -163,6 +163,10 @@
         'App audio is unavailable': 'Звук приложений недоступен',
         'The app whose audio to transcribe (● = playing sound now)': 'Приложение, звук которого распознавать (● = сейчас воспроизводит звук)',
         'No apps with audio': 'Нет приложений со звуком',
+        'All system audio': 'Весь системный звук',
+        '⚠ All apps are recorded': '⚠ Пишутся все приложения',
+        "This Windows can't record a single app (it needs Windows 10 2004+ with process loopback, or Windows 11): all system audio is recorded — mute other sounds":
+          'Эта версия Windows не умеет записывать одно приложение (нужна Windows 10 2004+ с process loopback или Windows 11): записывается весь системный звук — выключите лишние звуки',
         'Refresh the list of apps': 'Обновить список приложений',
         "Audio file to transcribe (stored in the project's audio folder)": 'Аудиофайл для распознавания (хранится в папке audio проекта)',
         'Upload another file…': 'Загрузить другой файл…',
@@ -574,6 +578,7 @@
         [/^(.+) is ready\. Press “Transcribe file”\.$/, '$1 готов. Нажмите «Распознать файл».'],
         [/^FILE (.+)$/, 'ФАЙЛ $1'],
         [/^(.+) \(not running\)$/, '$1 (не запущено)'],
+        [/^(● )?All system audio \((.+)\)$/, (dot, dev) => `${dot || ''}Весь системный звук (${dev})`],
         [/^Phrase gap set to (.+) s, applies from the next phrase$/, 'Пауза фразы: $1 с, со следующей фразы'],
         [/^Speech ([\d.:]+(?: s)?)$/, (s) => `Речь ${units(s)}`],
         [/^sent after a (.+) s pause$/, 'отправка после паузы $1 с'],
@@ -796,7 +801,7 @@
     ['#lbOcr', s => ['Loading OCR text…', '(no text recognized)', 'OCR is not ready yet.', 'OCR is not available.'].includes(s)],
     ['#projectName', s => s === 'Choose…'],
     ['#captureLabel, .pv-label', s => s === 'Full screen' || isArea(s)],
-    ['#appSel', s => s === 'No apps with audio' || / \(not running\)$/.test(s)],
+    ['#appSel', s => s === 'No apps with audio' || / \(not running\)$/.test(s) || /^(● )?All system audio/.test(s)],
     ['#fileSel', s => s === 'Upload another file…'],
   ];
   // Attributes whose value is data although the element itself is UI.

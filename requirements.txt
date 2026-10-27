@@ -20,3 +20,6 @@ imageio-ffmpeg>=0.6.0
 mss>=10.2; sys_platform == "win32"
 pillow>=13.0; sys_platform == "win32"
 soundcard>=0.4.6; sys_platform == "win32"
+comtypes>=1.4; sys_platform == "win32"
+pycaw>=20240316; sys_platform == "win32"
+psutil>=5.9; sys_platform == "win32"

@@ -91,7 +91,7 @@ Everything the web UI does works on Windows 10/11 too; the native macOS helpers 
 | macOS | Windows | |
 |---|---|---|
 | `screenshot_helper` (Swift) | `screenshot_helper_win.py` | Global hotkeys (`RegisterHotKey`), screenshots (`mss`), a window even when covered (`PrintWindow`), area / window pickers (tkinter overlay), auto frames, `Ctrl+Shift+W` selection via the clipboard |
-| `audio_helper` (Core Audio taps) | `audio_helper_win.py` | **System audio** (WASAPI loopback of the default output device, follows device changes) |
+| `audio_helper` (Core Audio taps) | `audio_helper_win.py` | **One app's audio** (WASAPI process loopback of the app's process tree) or **all system audio** (loopback of the default output device) |
 
 Setup (Python 3.12; an NVIDIA GPU is used automatically when present):
 
@@ -100,7 +100,8 @@ powershell -ExecutionPolicy Bypass -File setup_windows.ps1    # .venv + PyTorch 
 .\webui.bat                                                    # http://127.0.0.1:8765
 ```
 
-- **Calls (Google Meet, Slack huddles, Zoom, Teams, ...).** Pick *App + mic* and *System audio*: what the speakers play becomes `[Them]`, the microphone `[Me]`. Windows has no per-app capture before build 20348, so it is everything the default output device plays -- mute other sounds, and **use headphones**, or the microphone hears the other side too.
+- **Calls (Google Meet, Slack huddles, Zoom, Teams, ...).** Pick *App + mic* and the app: *Google Chrome* (or Edge, Brave, ...) for Meet in the browser, *Slack*, *Zoom*, ... -- its audio becomes `[Them]`, the microphone `[Me]`. Only that app is recorded, with its child processes (the browser's audio service, Teams' WebView2), so music or notifications from other apps stay out; a browser is recorded with all its tabs. The app list shows those that have opened an audio session (● = playing now); an app that isn't running yet is waited for. **Use headphones**, or the microphone hears the other side too.
+- Per-app capture (process loopback) works on Windows 11 and on Windows 10 2004+ (tested on 22H2, build 19045). Where Windows refuses it, the list offers only *All system audio* (everything the default output device plays) with a warning, and a recording set to an app falls back to it.
 - **GPU.** `--device auto` (the web UI's default) runs Whisper in float16 on CUDA when there is a GPU (faster-whisper needs cuBLAS + cuDNN 9: `packaging/requirements-windows-cuda.txt`), and falls back to the CPU if they don't load. `--device cpu` forces the CPU.
 - **Stop** sends `STOP` on the recorder's stdin (Windows has no SIGINT for child processes); Ctrl+C in the console works as before.
 - **ffmpeg** is taken from `PATH`, else the static binary from `imageio-ffmpeg`.

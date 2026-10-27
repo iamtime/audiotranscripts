@@ -55,6 +55,40 @@ def ffmpeg_exe() -> str | None:
         return None
 
 
+_app_names: dict[str, str] = {}
+
+
+def app_display_name(exe: str) -> str:
+    """Windows: an app's display name from its exe's version resource ("Google Chrome",
+    "Slack"), else the file name without .exe."""
+    if exe in _app_names:
+        return _app_names[exe]
+    name = ""
+    if IS_WINDOWS and exe:
+        import ctypes
+        from ctypes import wintypes as wt
+        ver = ctypes.WinDLL("version")
+        ver.GetFileVersionInfoSizeW.argtypes = [wt.LPCWSTR, ctypes.POINTER(wt.DWORD)]
+        ver.GetFileVersionInfoW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p]
+        ver.VerQueryValueW.argtypes = [ctypes.c_void_p, wt.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+                                       ctypes.POINTER(wt.UINT)]
+        try:
+            size = ver.GetFileVersionInfoSizeW(exe, None)
+            data = ctypes.create_string_buffer(size) if size else None
+            if data and ver.GetFileVersionInfoW(exe, 0, size, data):
+                ptr, n = ctypes.c_void_p(), wt.UINT()
+                if ver.VerQueryValueW(data, "\\VarFileInfo\\Translation", ctypes.byref(ptr), ctypes.byref(n)) \
+                        and n.value >= 4:
+                    lang, cp = ctypes.cast(ptr, ctypes.POINTER(wt.WORD * 2)).contents
+                    key = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription"
+                    if ver.VerQueryValueW(data, key, ctypes.byref(ptr), ctypes.byref(n)) and n.value:
+                        name = ctypes.wstring_at(ptr, n.value).rstrip("\0").strip()
+        except OSError:
+            pass
+    _app_names[exe] = name or Path(exe).stem
+    return _app_names[exe]
+
+
 def add_cuda_dll_dirs():
     """Windows: the cuBLAS / cuDNN DLLs from the nvidia-* pip packages live in
     site-packages/nvidia/*/bin, which the DLL loader doesn't search. CTranslate2 (faster-whisper

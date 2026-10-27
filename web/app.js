@@ -444,6 +444,9 @@ function sourceControl(s) {
       extra = `<select class="field" id="appSel" title="The app whose audio to transcribe (● = playing sound now)">
         ${list.length ? list.map(x => `<option value="${esc(x.bundle)}" ${x.bundle === s.source_app ? 'selected' : ''}>${x.playing ? '● ' : ''}${esc(x.name)}${x.gone ? ' (not running)' : ''}</option>`).join('') : '<option value="">No apps with audio</option>'}
       </select><button class="ghost-btn small" id="appRefresh" title="Refresh the list of apps">↻</button>`;
+      // Windows without per-app capture: say that every sound will be in the recording.
+      const note = (list.find(x => x.note) || {}).note;
+      if (note) extra += `<span class="state-sub" title="${esc(note)}">⚠ All apps are recorded</span>`;
     }
   } else if (kind === 'file') {
     const files = audioSrc.files || [];

@@ -171,7 +171,7 @@ def helper_log_reader(proc, prefix):
         line = line.decode("utf-8", "replace").strip() if isinstance(line, bytes) else line.strip()
         if line:
             print(f"\r\033[K{prefix} {line}")
-            if "zeros" in line or "error" in line:
+            if "zeros" in line or "error" in line or "warning:" in line:
                 events.emit("error", where=prefix.strip("[]"), message=line.removeprefix("[audio_helper] "))
 
 

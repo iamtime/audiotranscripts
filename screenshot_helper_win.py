@@ -41,11 +41,12 @@ from pathlib import Path
 import mss
 from PIL import Image, ImageEnhance
 
+import native_helpers
+
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 dwmapi = ctypes.WinDLL("dwmapi")
-version = ctypes.WinDLL("version")
 
 # ── Win32 prototypes (handles are pointer-sized: declare them, or they get truncated) ──
 
@@ -94,10 +95,6 @@ for fn, args, res in [
     (kernel32.GlobalLock, [wt.HGLOBAL], ctypes.c_void_p),
     (kernel32.GlobalUnlock, [wt.HGLOBAL], wt.BOOL),
     (dwmapi.DwmGetWindowAttribute, [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD], ctypes.c_long),
-    (version.GetFileVersionInfoSizeW, [wt.LPCWSTR, ctypes.POINTER(wt.DWORD)], wt.DWORD),
-    (version.GetFileVersionInfoW, [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p], wt.BOOL),
-    (version.VerQueryValueW, [ctypes.c_void_p, wt.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
-                              ctypes.POINTER(wt.UINT)], wt.BOOL),
 ]:
     fn.argtypes, fn.restype = args, res
 
@@ -191,35 +188,9 @@ def _exe_path(pid: int) -> str:
         kernel32.CloseHandle(h)
 
 
-_desc_cache: dict[str, str] = {}
-
-
-def _file_description(exe: str) -> str:
-    """The app's display name from its version resource ("Google Chrome", "Slack")."""
-    if exe in _desc_cache:
-        return _desc_cache[exe]
-    desc = ""
-    try:
-        size = version.GetFileVersionInfoSizeW(exe, None)
-        if size:
-            data = ctypes.create_string_buffer(size)
-            if version.GetFileVersionInfoW(exe, 0, size, data):
-                ptr, n = ctypes.c_void_p(), wt.UINT()
-                if version.VerQueryValueW(data, "\\VarFileInfo\\Translation", ctypes.byref(ptr), ctypes.byref(n)) \
-                        and n.value >= 4:
-                    lang, cp = ctypes.cast(ptr, ctypes.POINTER(wt.WORD * 2)).contents
-                    key = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription"
-                    if version.VerQueryValueW(data, key, ctypes.byref(ptr), ctypes.byref(n)) and n.value:
-                        desc = ctypes.wstring_at(ptr, n.value).rstrip("\0").strip()
-    except OSError:
-        pass
-    _desc_cache[exe] = desc or Path(exe).stem
-    return _desc_cache[exe]
-
-
 def owner_name(hwnd) -> str:
     exe = _exe_path(_pid(hwnd))
-    return _file_description(exe) if exe else ""
+    return native_helpers.app_display_name(exe) if exe else ""
 
 
 def frame_rect(hwnd) -> tuple[int, int, int, int]:
