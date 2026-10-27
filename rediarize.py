@@ -171,6 +171,8 @@ def build_diarized_lines(data, num_speakers, cluster_threshold):
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     parser = argparse.ArgumentParser(
         description="Re-run diarization with different parameters",
         epilog="Examples:\n"

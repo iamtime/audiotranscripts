@@ -353,7 +353,7 @@ function renderControl() {
           <div class="seg" id="langSeg">${['auto', 'en', 'ru'].map(l => `<button data-v="${l}" class="${(s.lang || 'auto') === l ? 'on' : ''}" ${engineBlocksLang(s.engine, l) ? `disabled title="${ENGINES.gigaam.name} recognizes Russian only"` : ''}>${l === 'auto' ? 'Auto' : l.toUpperCase()}</button>`).join('')}</div></div>
         <div class="opt"><span class="opt-label">Speakers</span>
           <select class="field" id="spkSel">${['auto', 'off', '2', '3', '4', '5', '6', '8'].map(v => `<option value="${v}" ${String(s.speakers || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? 'Detect' : v === 'off' ? 'Off' : v}</option>`).join('')}</select></div>
-        ${kind === 'file' ? '' : `<div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${s.minutes || 180}"> min</div>`}
+        ${kind === 'file' ? '' : `<div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${esc(s.minutes || 180)}"> min</div>`}
         ${pauseControl(s.pause || 1.5)}
         ${kind === 'file' ? '' : `<label class="switch opt"><input type="checkbox" id="audioChk" ${s.save_audio ? 'checked' : ''}><span class="knob"></span>Save audio</label>
         <label class="switch opt" title="Capture the screen every second and keep the frames that show something new"><input type="checkbox" id="autoChk" ${s.auto_frames ? 'checked' : ''}><span class="knob"></span>Auto frames</label>`}
@@ -1645,6 +1645,9 @@ async function openSettings() {
       <fieldset class="fset"><legend>Recognizer</legend>
         <div class="frow" ${st.bundledPython ? 'hidden' : ''}><label>Python</label><div style="display:flex;gap:8px"><input class="field" id="setPy" value="${esc(s.recorder_python)}" placeholder="Same as the server"><button class="ghost-btn small" id="checkPy" style="height:30px">Check</button></div>
           <div class="help">The interpreter that has faster-whisper, torch and easyocr installed. <span id="checkRes" class="check-res"></span></div></div>
+        <div class="frow"><label>Device</label><select class="field" id="setDevice" style="width:auto">
+          ${[['auto', 'Auto (GPU when available)'], ['cuda', 'GPU (CUDA)'], ['cpu', 'CPU']].map(([v, l]) => `<option value="${v}" ${(s.device || 'auto') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <div class="help">Where Whisper and the speaker model run. An NVIDIA GPU makes Whisper several times faster; it falls back to the CPU if CUDA doesn't load.</div></div>
         <div class="frow"><label>Auto frames</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setL1" ${s.frames_l1 !== false ? 'checked' : ''}><span class="knob"></span>Smart filter (CLIP): drop webcam faces, merge look-alike frames</label>
           <div class="help">Applies to the next recording. Off = pixel comparison only.</div></div>
       </fieldset>
@@ -1673,7 +1676,7 @@ async function openSettings() {
         st.settings = await api('POST', '/api/settings', {
           beautify_model: $('#setBModel').value, chat_model: $('#setCModel').value,
           auto_final_beautify: $('#setAuto').checked, recorder_python: $('#setPy').value.trim(),
-          frames_l1: $('#setL1').checked,
+          frames_l1: $('#setL1').checked, device: $('#setDevice').value,
         });
         if (st.project) await api('POST', `/api/projects/${encodeURIComponent(st.project)}/settings`, {
           context_dir: $('#setCtx').value.trim(), style_reference: $('#setStyle').value.trim(),
@@ -1693,8 +1696,8 @@ function aiPicker(a) {
   const card = (id, title, sub, disabled) => `<button type="button" class="ai-card ${disabled ? 'off' : ''}" data-id="${id}" ${disabled ? 'disabled' : ''}><b>${esc(title)}</b><span>${sub}</span></button>`;
   const html = `
       <div class="ai-cards">
-        ${card('claude', 'Claude Code', a.claude ? 'Installed · best results: sees screenshots, uses your MCP servers' : 'Not installed on this Mac (<a href="https://claude.com/claude-code" target="_blank">get it</a>)', !a.claude)}
-        ${Object.entries(P).map(([id, p]) => card(id, p.name, p.key ? `Key saved (${esc(p.key)})` : p.env_key ? 'Key from environment' : id === 'custom' ? 'Ollama, LM Studio, vLLM, any OpenAI-style API' : 'Needs an API key', false)).join('')}
+        ${card('claude', 'Claude Code', a.claude ? 'Installed · best results: sees screenshots, uses your MCP servers' : 'Not installed on this computer (<a href="https://claude.com/claude-code" target="_blank">get it</a>)', !a.claude)}
+        ${Object.entries(P).map(([id, p]) => card(id, p.name, p.key ? `Key saved (${esc(p.key)})` : p.env_key ? 'Key from environment' : id === 'custom' ? 'vLLM, llama.cpp, any OpenAI-style API' : p.local ? 'Runs on this computer · no key' : 'Needs an API key', false)).join('')}
       </div>
       <div class="ai-claude"><button type="button" class="ghost-btn small" id="aiClaudeTest">Test Claude Code</button>
         <span id="aiClaudeRes" class="check-res"></span></div>
@@ -1718,14 +1721,15 @@ function aiPicker(a) {
       const p = P[sel.provider];
       const same = sel.provider === a.provider;
       $('#aiKey', root).value = '';
-      $('#aiKey', root).placeholder = p.key ? `Saved: ${p.key} — type to replace` : p.env_key ? 'Using the key from the environment' : sel.provider === 'custom' ? 'Optional for local servers' : 'Paste your API key';
-      $('#aiKeyHelp', root).innerHTML = p.key_url ? `Get one at <a href="${p.key_url}" target="_blank">${esc(p.key_url.replace('https://', ''))}</a>. Stored on this Mac only.` : 'Stored on this Mac only.';
+      $('#aiKey', root).placeholder = p.key ? `Saved: ${p.key} — type to replace` : p.env_key ? 'Using the key from the environment' : p.local ? 'Optional for local servers' : 'Paste your API key';
+      $('#aiKeyHelp', root).innerHTML = p.key_url ? `Get one at <a href="${p.key_url}" target="_blank">${esc(p.key_url.replace('https://', ''))}</a>. Stored on this computer only.` : 'Stored on this computer only.';
       $('#aiBase', root).value = same ? a.base_url : '';
       $('#aiBase', root).placeholder = p.base_url || 'http://localhost:11434/v1';
       $('#aiModel', root).value = same ? a.model : '';
       $('#aiModel', root).placeholder = p.model || 'model name';
       $('#aiModels', root).innerHTML = '';
       $('#aiTestRes', root).textContent = '';
+      if (p.local && p.base_url && !same) $('#aiTest', root).click();   // list the installed models
     };
     const form = () => ({ engine: sel.engine, provider: sel.provider, api_key: $('#aiKey', root).value.trim(),
       base_url: $('#aiBase', root).value.trim(), model: $('#aiModel', root).value.trim() });
@@ -1759,9 +1763,9 @@ function aiPicker(a) {
       const f = form();
       if (f.engine !== 'api') return '';
       const p = P[f.provider];
-      if (!f.api_key && !p.key && !p.env_key && f.provider !== 'custom') { $('#aiKey', root).focus(); return 'Enter the API key'; }
-      if (f.provider === 'custom' && !f.base_url) { $('#aiBase', root).focus(); return 'Enter the host (base URL)'; }
-      if (f.provider === 'custom' && !f.model) { $('#aiModel', root).focus(); return 'Enter the model name'; }
+      if (!f.api_key && !p.key && !p.env_key && !p.local) { $('#aiKey', root).focus(); return 'Enter the API key'; }
+      if (!f.base_url && !p.base_url) { $('#aiBase', root).focus(); return 'Enter the host (base URL)'; }
+      if (!f.model && !p.model) { $('#aiModel', root).focus(); return 'Enter the model name (Test lists the available ones)'; }
       return '';
     };
     show();
@@ -2219,7 +2223,8 @@ $('#docFrame').addEventListener('load', () => {
     st.settings = s.settings; st.recorder = s.recorder; st.claude = s.claude; st.models = s.models;
     st.ai = s.ai; st.bundledPython = s.bundled_python;
     if (s.recorder.pipeline) st.pipeline = s.recorder.pipeline;
-    if (!s.helper) toast('screenshot_helper binary is missing — run ./compile.sh', 'error', 8000);
+    if (!s.helper) toast(s.platform === 'win32' ? 'Screenshots are off — pip install mss pillow'
+      : 'screenshot_helper binary is missing — run ./compile.sh', 'error', 8000);
     await loadProjects();
     if (st.project) await selectProject(st.project);
     else renderAll();

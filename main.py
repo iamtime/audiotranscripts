@@ -20,6 +20,7 @@ import easyocr
 
 from asr_engines import ENGINES, create_engine, engine_label
 import downloads
+import native_helpers
 from events import events
 
 try:
@@ -34,14 +35,13 @@ except ImportError:
 # ── Config ───────────────────────────────────────────────────────────────────
 MODEL_SIZE = "large-v3-turbo"
 LANGUAGE = "auto"
-DEVICE = "cpu"
-COMPUTE_TYPE = "int8"
+DEVICE = "cpu"              # Whisper and the speaker model; --device auto picks cuda when there is one
+COMPUTE_TYPE = "int8"       # faster-whisper quantization on cpu (float16 on cuda)
 SAMPLE_RATE = 16000
 VAD_THRESHOLD = 0.5
 SILENCE_DURATION_MS = 1500
 MIN_SPEECH_DURATION_MS = 250
-SCREENSHOT_HELPER = Path(__file__).parent / "screenshot_helper"
-AUDIO_HELPER = Path(__file__).parent / "audio_helper"
+SILERO_VAD_REPO = "snakers4/silero-vad:v5.1.2"   # pinned: torch.hub runs the repo's code
 APP_CHUNK = 1600            # samples per read from audio_helper (100 ms at 16 kHz)
 BEAM_SIZE = 5
 
@@ -80,6 +80,8 @@ def load_models(engine_name="whisper", asr_model=None):
         events.emit("status", state="loading", detail=f"Loading {label}")
     asr_engine = create_engine(engine_name, device=DEVICE, model_size=MODEL_SIZE,
                                compute_type=COMPUTE_TYPE, beam_size=BEAM_SIZE, asr_model=asr_model)
+    if DEVICE == "cuda" and engine_name == "whisper":
+        asr_engine = _cuda_or_cpu(asr_engine, engine_name, asr_model)
     print("Whisper model loaded." if engine_name == "whisper" else f"{asr_engine.label} loaded.")
 
     print("Loading Silero VAD...")
@@ -89,13 +91,34 @@ def load_models(engine_name="whisper", asr_model=None):
     return asr_engine, vad_model
 
 
+def _cuda_or_cpu(asr_engine, engine_name, asr_model):
+    """The CUDA libraries (cuBLAS, cuDNN) load on the first transcription, not with the
+    model: try one second of silence now and fall back to the CPU if they are missing."""
+    global DEVICE, COMPUTE_TYPE
+    try:
+        list(asr_engine.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="en",
+                                   word_timestamps=False, hotwords=None))
+        return asr_engine
+    except Exception as e:
+        print(f"[cuda] {e}; using the CPU", file=sys.stderr)
+        events.emit("error", where="GPU", message=f"CUDA is not usable ({e}); recognizing on the CPU")
+    DEVICE, COMPUTE_TYPE = "cpu", "int8"
+    return create_engine(engine_name, device=DEVICE, model_size=MODEL_SIZE,
+                         compute_type=COMPUTE_TYPE, beam_size=BEAM_SIZE, asr_model=asr_model)
+
+
 def load_vad():
     silero_dir = os.environ.get("VOICE_REC_SILERO_DIR")   # bundled copy (macOS app)
     if silero_dir and Path(silero_dir, "hubconf.py").exists():
         vad_model, utils = torch.hub.load(repo_or_dir=silero_dir, model="silero_vad", source="local")
     else:
+        try:
+            from silero_vad import load_silero_vad     # pip install silero-vad: no remote code at all
+            return load_silero_vad()
+        except ImportError:
+            pass
         vad_model, utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
+            repo_or_dir=SILERO_VAD_REPO,
             model="silero_vad",
             trust_repo=True,
         )
@@ -149,7 +172,7 @@ def helper_log_reader(proc, prefix):
         if line:
             print(f"\r\033[K{prefix} {line}")
             if "zeros" in line or "error" in line:
-                events.emit("error", where="app audio", message=line.removeprefix("[audio_helper] "))
+                events.emit("error", where=prefix.strip("[]"), message=line.removeprefix("[audio_helper] "))
 
 
 def decode_audio_file(path: Path, work_dir: Path) -> np.ndarray:
@@ -157,9 +180,14 @@ def decode_audio_file(path: Path, work_dir: Path) -> np.ndarray:
     tmp = work_dir / f".decode_{os.getpid()}.raw"
     try:
         try:
-            r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(path),
+            ffmpeg = native_helpers.ffmpeg_exe()
+            if not ffmpeg:
+                if not native_helpers.IS_MAC:
+                    raise RuntimeError("ffmpeg not found: install it (https://ffmpeg.org) or pip install imageio-ffmpeg")
+                raise FileNotFoundError("ffmpeg")
+            r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", str(path),
                                 "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le", str(tmp)],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode != 0:
                 raise RuntimeError(r.stderr.strip() or f"ffmpeg exited with {r.returncode}")
             return np.fromfile(tmp, dtype="<f4")
@@ -654,7 +682,7 @@ def finalize_diarization(session_data, output_path, num_speakers, cluster_thresh
     # Keep provisional as .raw.txt, write diarized to original path
     raw_path = output_path.with_suffix(".raw.txt")
     if raw_text is None:
-        output_path.rename(raw_path)
+        output_path.replace(raw_path)
     else:
         raw_path.write_text(raw_text, encoding="utf-8")
     output_path.write_text(prefix_text + "\n".join(lines) + "\n", encoding="utf-8")
@@ -667,7 +695,7 @@ def _cpu_lacks_avx2() -> bool:
     """x86_64 without AVX2 (e.g. the Intel build under Rosetta): PyTorch's quantized kernels
     (fbgemm) would crash with an illegal instruction."""
     import platform
-    if platform.machine() != "x86_64":
+    if platform.machine() != "x86_64" or not native_helpers.IS_MAC:
         return False
     try:
         out = subprocess.run(["sysctl", "-n", "hw.optional.avx2_0"], capture_output=True, text=True).stdout
@@ -815,9 +843,9 @@ def save_audio_recording(project_dir: Path, timestamp: str):
     # Convert to MP3 via ffmpeg
     try:
         result = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error",
+            [native_helpers.ffmpeg_exe() or "ffmpeg", "-y", "-loglevel", "error",
              "-i", str(wav_path), "-b:a", "64k", str(mp3_path)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             wav_path.unlink()
@@ -829,8 +857,24 @@ def save_audio_recording(project_dir: Path, timestamp: str):
         print(f"[audio] ffmpeg not found, WAV kept: {wav_path}")
 
 
+def pick_device(choice: str) -> tuple[str, str]:
+    """(device, faster-whisper compute type) for --device auto|cpu|cuda."""
+    if choice == "cpu":
+        return "cpu", COMPUTE_TYPE
+    native_helpers.add_cuda_dll_dirs()
+    try:
+        import ctranslate2
+        has_cuda = ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        has_cuda = False
+    if choice == "cuda" and not has_cuda:
+        print("--device cuda: no CUDA device found, using the CPU", file=sys.stderr)
+    return ("cuda", "float16") if has_cuda else ("cpu", COMPUTE_TYPE)
+
+
 def main():
-    global SILENCE_DURATION_MS
+    global SILENCE_DURATION_MS, DEVICE, COMPUTE_TYPE
+    native_helpers.utf8_stdio()
 
     parser = argparse.ArgumentParser(description="Real-time Russian speech-to-text")
     parser.add_argument("project", help="Project name (isolated directory for outputs)")
@@ -880,20 +924,26 @@ def main():
     parser.add_argument("--vocab-correct", action="store_true",
                         help='Replace "heard" phrases from --vocab-file with the "meant" ones in the output '
                              "(useful with gigaam/parakeet, which have no hotwords)")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="cpu",
+                        help="Where Whisper and the speaker model run: cpu (default), cuda (NVIDIA GPU), "
+                             "or auto (cuda when available)")
     parser.add_argument("--source", default="mic", metavar="SOURCE",
                         help="What to transcribe: mic (default); app:<bundle-id> — one app's audio, e.g. "
                              "app:com.microsoft.teams2 (macOS 14.2+); app+mic:<bundle-id> — the app and the "
                              "microphone, lines marked [Them] / [Me]; file:<path> — an audio file (mp3, m4a, "
-                             "wav, ...), timestamps are positions in the file. See audio_helper --list")
+                             "wav, ...), timestamps are positions in the file. See audio_helper --list. "
+                             "On Windows the app is app:system — everything the speakers play")
     args = parser.parse_args()
     source_kind, _, source_arg = args.source.partition(":")
     if source_kind not in ("mic", "app", "app+mic", "file") or (source_kind != "mic" and not source_arg):
         print(f"--source: expected mic, app:<bundle-id>, app+mic:<bundle-id> or file:<path>, got {args.source!r}",
               file=sys.stderr)
         sys.exit(1)
-    if source_kind in ("app", "app+mic") and not AUDIO_HELPER.exists():
-        print(f"App audio needs {AUDIO_HELPER.name} (build it with ./build_audio_helper.sh)", file=sys.stderr)
+    audio_helper = native_helpers.audio_cmd()
+    if source_kind in ("app", "app+mic") and not audio_helper:
+        print(f"App audio needs audio_helper ({native_helpers.audio_build_hint()})", file=sys.stderr)
         sys.exit(1)
+    DEVICE, COMPUTE_TYPE = pick_device(args.device)
     if source_kind == "file" and not Path(source_arg).is_file():
         print(f"Audio file not found: {source_arg}", file=sys.stderr)
         sys.exit(1)
@@ -979,7 +1029,7 @@ def main():
     if enable_diarization:
         print("Loading speaker embedding model (ECAPA-TDNN)...")
         events.emit("status", state="loading", detail="Loading speaker model")
-        embedder = SpeakerEmbedder(device=DEVICE)
+        embedder = SpeakerEmbedder(device="cuda" if DEVICE == "cuda" and torch.cuda.is_available() else "cpu")
         print("Speaker model loaded.")
         if num_speakers:
             print(f"Diarization: {num_speakers} speaker(s)")
@@ -1052,7 +1102,7 @@ def main():
         )
         stream.start()
     if source_kind in ("app", "app+mic"):
-        app_proc = subprocess.Popen([str(AUDIO_HELPER), "--capture", source_arg],
+        app_proc = subprocess.Popen([*audio_helper, "--capture", source_arg],
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         threading.Thread(target=helper_log_reader, args=(app_proc, "[app audio]"), daemon=True).start()
         threading.Thread(target=app_audio_reader,
@@ -1066,8 +1116,13 @@ def main():
 
     # Start native screenshot helper (not for audio files: nothing on screen belongs to them)
     screenshot_proc = None
-    if source_kind != "file":
-        helper_cmd = [str(SCREENSHOT_HELPER), str(screenshot_dir.resolve())]
+    screenshot_helper = native_helpers.screenshot_cmd()
+    if source_kind != "file" and not screenshot_helper:
+        print(f"[screenshots] off: screenshot_helper is missing ({native_helpers.screenshot_build_hint()})",
+              file=sys.stderr)
+        events.emit("error", where="screenshots", message="Screenshots are off: the screenshot helper is missing")
+    if source_kind != "file" and screenshot_helper:
+        helper_cmd = [*screenshot_helper, str(screenshot_dir.resolve())]
         if args.capture_config:
             helper_cmd.append(str(Path(args.capture_config).resolve()))
         screenshot_proc = subprocess.Popen(
@@ -1075,12 +1130,14 @@ def main():
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         helper_thread = threading.Thread(
             target=helper_reader, args=(screenshot_proc,), daemon=True
         )
         helper_thread.start()
+        # Drain its stderr: a full pipe (4 KB on Windows) would block the helper.
+        threading.Thread(target=helper_log_reader, args=(screenshot_proc, "[screenshots]"), daemon=True).start()
 
     frames_dir = project_dir / "frames" / timestamp
     frames_interval = args.auto_frames or 1.0

@@ -596,6 +596,8 @@ def generate(client, provider: str, model: str, prompt: str) -> str:
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     parser = argparse.ArgumentParser(
         description="Process transcripts through Gemini",
         epilog="Examples:\n"

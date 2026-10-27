@@ -226,9 +226,12 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
 
 
 def claude_command(spec: dict) -> list[str]:
-    tools = ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "TodoWrite", "mcp__claude-context"]
-    return claude_cli.build_command(spec["settings"]["beautify_model"], tools, spec["add_dirs"],
-                                    accept_edits=True)
+    # Writes only into this session's folder. The transcript, notes, OCR text and external
+    # transcripts are untrusted input (anyone in the meeting can say "edit server.py"), so
+    # no acceptEdits: -p denies every edit that isn't allowed by this rule.
+    tools = ["Read", "Glob", "Grep", "TodoWrite", "mcp__claude-context",
+             claude_cli.edit_rule(Path(spec["out"]).parent)]
+    return claude_cli.build_command(spec["settings"]["beautify_model"], tools, spec["add_dirs"])
 
 
 def html_stats(html: str, shot_names: list[str]) -> dict:
@@ -295,7 +298,6 @@ def _copy_to_docs(project: str, sid: str, out: Path, rec: dict, manifest: dict) 
 def run_api(spec: dict, on_progress=None) -> None:
     """Single-pass Beautify with an API model (llm_api); on_progress(chars) while it writes."""
     import llm_api
-    import process_transcript2 as pt
     settings = spec["settings"]
     text = spec["input"].read_text(encoding="utf-8", errors="replace")
     ocr_parts = []
@@ -332,12 +334,16 @@ def run_api(spec: dict, on_progress=None) -> None:
         html = html.split("\n", 1)[1]
     if html.endswith("```"):
         html = html.rsplit("```", 1)[0].rstrip()
-    spec["out"].write_text(pt.fix_unrendered_templates(html), encoding="utf-8")
+    # Not fix_unrendered_templates(): it turns "${...}" in the text into running script, and
+    # the text comes from the transcript. Documents are static HTML (/files serves no script).
+    spec["out"].write_text(html, encoding="utf-8")
 
 
 # ── Console entry point ──────────────────────────────────────────────────────
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     ap = argparse.ArgumentParser(description="Beautify a transcript into a full annotated HTML document")
     ap.add_argument("project")
     ap.add_argument("sid", help="Session id, e.g. 20260928_110051 (or 'latest')")
@@ -363,7 +369,7 @@ def main():
             rec = finish(args.project, sid, spec["v"], "failed", error=str(e))
     else:
         proc = subprocess.Popen(claude_command(spec), cwd=spec["cwd"], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, text=True)
+                                stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
         proc.stdin.write(spec["prompt"])
         proc.stdin.close()
         result = {}

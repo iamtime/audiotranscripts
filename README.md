@@ -66,7 +66,7 @@ The screenshot helper communicates with Python through stdout: it prints `SCREEN
 
 ## Requirements
 
-- macOS (screenshot helper uses Carbon/Cocoa APIs)
+- macOS (screenshot helper uses Carbon/Cocoa APIs), or Windows 10/11 -- see [Windows](#windows)
 - Python 3.10+
 - ffmpeg (optional, for MP3 audio export)
 - Screen Recording permission (for screenshots)
@@ -83,6 +83,27 @@ pip install -r requirements.txt
 swiftc -O -o screenshot_helper screenshot_helper.swift \
     -framework Cocoa -framework Carbon -framework CoreGraphics
 ```
+
+## Windows
+
+Everything the web UI does works on Windows 10/11 too; the native macOS helpers have Python counterparts with the same command line and output (`native_helpers.py` picks the right one):
+
+| macOS | Windows | |
+|---|---|---|
+| `screenshot_helper` (Swift) | `screenshot_helper_win.py` | Global hotkeys (`RegisterHotKey`), screenshots (`mss`), a window even when covered (`PrintWindow`), area / window pickers (tkinter overlay), auto frames, `Ctrl+Shift+W` selection via the clipboard |
+| `audio_helper` (Core Audio taps) | `audio_helper_win.py` | **System audio** (WASAPI loopback of the default output device, follows device changes) |
+
+Setup (Python 3.12; an NVIDIA GPU is used automatically when present):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File setup_windows.ps1    # .venv + PyTorch (CUDA or CPU) + dependencies
+.\webui.bat                                                    # http://127.0.0.1:8765
+```
+
+- **Calls (Google Meet, Slack huddles, Zoom, Teams, ...).** Pick *App + mic* and *System audio*: what the speakers play becomes `[Them]`, the microphone `[Me]`. Windows has no per-app capture before build 20348, so it is everything the default output device plays -- mute other sounds, and **use headphones**, or the microphone hears the other side too.
+- **GPU.** `--device auto` (the web UI's default) runs Whisper in float16 on CUDA when there is a GPU (faster-whisper needs cuBLAS + cuDNN 9: `packaging/requirements-windows-cuda.txt`), and falls back to the CPU if they don't load. `--device cpu` forces the CPU.
+- **Stop** sends `STOP` on the recorder's stdin (Windows has no SIGINT for child processes); Ctrl+C in the console works as before.
+- **ffmpeg** is taken from `PATH`, else the static binary from `imageio-ffmpeg`.
 
 ## Usage
 
@@ -169,6 +190,10 @@ VOICE_REC_PYTHON=/path/to/python ./webui.sh --port 9000 --no-browser
   - *Final* runs automatically when recording stops. It uses the diarized transcript and is also copied to `docs/`.
 - **Ask**: chat about the transcript (live or saved) while recording keeps running. It follows up with only the new lines.
 - **Notes**: one file per project, `projects/<name>/notes.md`, sent with every Beautify and Ask request as authoritative context: who's who, the client, terms that are often misheard. Edits are saved as you type.
+- **AI**: Beautify and Ask run through Claude Code, or through an LLM API (Settings → AI): Gemini, OpenAI, Anthropic, OpenRouter, a local model in **Ollama** or **LM Studio** (no key; *Test* lists the installed models), or any OpenAI-compatible host (vLLM, llama.cpp server, a gateway).
+- **Language**: English or Russian (the EN | RU switch in the top bar; `web/i18n.js`). The default follows the browser.
+
+**Security.** The server has no login, so it only answers requests addressed to `127.0.0.1` / `localhost` (DNS rebinding) whose `Origin`, when a browser sends one, is the UI itself (other web pages can't drive it or open its WebSocket). Files under `/files/` are served with `script-src 'none'`. Beautify's Claude Code may write only into the session's folder (the transcript is untrusted input). To open the UI from another machine: `--host 0.0.0.0 --allow-host <name>` -- anyone who can reach the port then controls it.
 
 Per-project settings (gear icon) live in `projects/<name>/project.json`:
 - **Knowledge folder**: Claude Code runs there, so its MCP servers (e.g. `claude-context`) are available for callouts.
@@ -363,7 +388,11 @@ Key constants in `main.py`:
 | `rediarize.py` | Re-run diarization on saved sessions with different parameters |
 | `process_transcript.py` | LLM-based transcript cleanup and HTML generation |
 | `server.py` | Web UI server (FastAPI + WebSocket); drives `main.py`, Beautify and chat |
-| `web/` | Web UI front end (static HTML/CSS/JS, no build step) |
+| `web/` | Web UI front end (static HTML/CSS/JS, no build step); `i18n.js`: Russian UI |
+| `native_helpers.py` | Picks the screenshot / audio helper for the platform; ffmpeg lookup, UTF-8 stdio, CUDA DLLs |
+| `screenshot_helper_win.py` | Windows counterpart of `screenshot_helper` (same CLI and output) |
+| `audio_helper_win.py` | Windows counterpart of `audio_helper`: system audio via WASAPI loopback |
+| `setup_windows.ps1`, `webui.bat` | Windows setup (venv, PyTorch CUDA/CPU, dependencies) and launcher |
 | `app/` | macOS app: Electron shell (`main.js`), build config (`package.json`), icon and entitlements |
 | `packaging/` | macOS app build: `build_app.sh`, bundled Python runtime, models, icon |
 | `beautify.py` | Full annotated transcript via Claude Code (also a console tool) |
@@ -374,4 +403,4 @@ Key constants in `main.py`:
 | `external.py` | External transcripts (Teams etc.): parsing, storage, binding to sessions |
 | `events.py` | Optional JSON-lines event stream from `main.py --events` |
 | `templates/annotated_transcript_style.html` | Default style reference for Beautify |
-| `requirements.txt` | Python dependencies |
+| `requirements.txt` | Python dependencies (`packaging/requirements-windows*.txt` for Windows) |

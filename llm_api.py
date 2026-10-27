@@ -2,13 +2,15 @@
 
 Every provider is spoken to over the OpenAI-compatible chat-completions protocol
 (the openai SDK with a base URL): OpenAI, Gemini, Anthropic and OpenRouter offer
-such an endpoint, and so do local servers (Ollama, LM Studio, vLLM) -- "custom".
+such an endpoint, and so do local servers: Ollama, LM Studio, or any other ("custom":
+vLLM, llama.cpp server, a corporate gateway).
 
 API keys are kept out of settings.json, in .webui/secrets.json (mode 600);
 the usual environment variables (GEMINI_API_KEY, OPENAI_API_KEY, ...) work too.
 """
 
 import os
+from urllib.parse import urlsplit
 
 import sessions as S
 
@@ -25,8 +27,12 @@ PROVIDERS = {
     "openrouter": {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
                    "model": "google/gemini-2.5-flash", "env": ("OPENROUTER_API_KEY",),
                    "key_url": "https://openrouter.ai/keys"},
+    "ollama": {"name": "Ollama (local)", "base_url": "http://localhost:11434/v1", "model": "", "env": (),
+               "key_url": "https://ollama.com/library", "local": True},
+    "lmstudio": {"name": "LM Studio (local)", "base_url": "http://localhost:1234/v1", "model": "", "env": (),
+                 "key_url": "https://lmstudio.ai", "local": True},
     "custom": {"name": "Other (OpenAI-compatible)", "base_url": "", "model": "", "env": (),
-               "key_url": ""},
+               "key_url": "", "local": True},
 }
 SECRETS = S.WEBUI_DIR / "secrets.json"
 MAX_OUTPUT = 32000   # Anthropic requires max_tokens; a full annotated transcript is long
@@ -60,8 +66,7 @@ def set_key(provider: str, key: str | None):
     else:
         data["api_keys"].pop(provider, None)
     SECRETS.parent.mkdir(parents=True, exist_ok=True)
-    S._write_json(SECRETS, data)
-    os.chmod(SECRETS, 0o600)
+    S._write_json(SECRETS, data, mode=0o600)
 
 
 def mask(key: str) -> str:
@@ -75,8 +80,17 @@ def config(settings: dict | None = None) -> dict:
     s = settings or S.load_settings()
     provider = s.get("api_provider") or "gemini"
     p = PROVIDERS.get(provider, PROVIDERS["custom"])
-    return {"provider": provider, "base_url": (s.get("api_base_url") or "").strip() or p["base_url"],
-            "model": (s.get("api_model") or "").strip() or p["model"], "key": api_key(provider)}
+    base_url = (s.get("api_base_url") or "").strip() or p["base_url"]
+    key = api_key(provider)
+    if key and not p.get("local") and urlsplit(base_url).hostname != urlsplit(p["base_url"]).hostname:
+        key = ""    # a provider's key goes to that provider only; other hosts: the "custom" provider
+    return {"provider": provider, "base_url": base_url,
+            "model": (s.get("api_model") or "").strip() or p["model"], "key": key}
+
+
+def local_provider(provider: str) -> bool:
+    """Local servers and custom hosts: an API key is optional."""
+    return bool(PROVIDERS.get(provider, PROVIDERS["custom"]).get("local"))
 
 
 def problem(cfg: dict) -> str:
@@ -85,7 +99,7 @@ def problem(cfg: dict) -> str:
         return "Set the API host (base URL)"
     if not cfg["model"]:
         return "Choose a model"
-    if not cfg["key"] and cfg["provider"] != "custom":   # local servers often need no key
+    if not cfg["key"] and not local_provider(cfg["provider"]):   # local servers often need no key
         return f"Add the {PROVIDERS[cfg['provider']]['name']} API key"
     return ""
 
@@ -110,7 +124,7 @@ def public(settings: dict) -> dict:
     for pid, p in PROVIDERS.items():
         k = stored_key(pid)
         out[pid] = {"name": p["name"], "base_url": p["base_url"], "model": p["model"], "key_url": p["key_url"],
-                    "key": mask(k) if k else "", "env_key": bool(env_key(pid))}
+                    "key": mask(k) if k else "", "env_key": bool(env_key(pid)), "local": bool(p.get("local"))}
     return {"providers": out, "provider": settings.get("api_provider") or "gemini",
             "model": settings.get("api_model") or "", "base_url": settings.get("api_base_url") or ""}
 
@@ -182,7 +196,7 @@ def explain(e: Exception) -> str:
     if name == "NotFoundError" or " 404" in msg:
         return f"Not found (wrong model name or host): {msg[:200]}"
     if name in ("APIConnectionError", "APITimeoutError"):
-        return "Could not reach the API host (internet connection, or the base URL)"
+        return "Could not reach the API host (internet connection, or the base URL; is the local server running?)"
     if name == "RateLimitError" or " 429" in msg:
         return f"Rate limit or quota exceeded: {msg[:200]}"
     return f"{name}: {msg[:300]}"

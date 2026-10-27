@@ -114,6 +114,8 @@ def normalize(text: str) -> str:
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("audio")
     ap.add_argument("--start", type=float, default=0.0, help="Offset into the recording, seconds")

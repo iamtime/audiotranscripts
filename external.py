@@ -73,6 +73,8 @@ def _from_vtt(text: str) -> str:
 
 def _from_docx(data: bytes) -> str:
     with zipfile.ZipFile(io.BytesIO(data)) as z:
+        if z.getinfo("word/document.xml").file_size > 10 * MAX_BYTES:    # zip bomb
+            raise ValueError("The .docx is too large")
         xml = z.read("word/document.xml").decode("utf-8", errors="replace")
     paras = []
     for p in re.findall(r"<w:p[ >].*?</w:p>", xml, flags=re.S):

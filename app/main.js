@@ -256,7 +256,16 @@ async function recorderActive() {
 // ── Windows ─────────────────────────────────────────────────────────────────
 
 function sameOrigin(url) {
-  return serverUrl && url.startsWith(serverUrl);
+  // Exact origin: a prefix test would let http://127.0.0.1:PORT@evil.example through.
+  try { return !!serverUrl && new URL(url).origin === new URL(serverUrl).origin; } catch (_) { return false; }
+}
+
+// Other links open in the default browser, but only web links: file:, smb: or a custom
+// scheme from a page could launch or mount things.
+function openOutside(url) {
+  try {
+    if (['http:', 'https:', 'mailto:'].includes(new URL(url).protocol)) shell.openExternal(url);
+  } catch (_) { /* not a URL */ }
 }
 
 function wireLinks(win) {
@@ -264,11 +273,11 @@ function wireLinks(win) {
     if (sameOrigin(url)) {
       return { action: 'allow', overrideBrowserWindowOptions: { width: 1100, height: 900, backgroundColor: '#ffffff' } };
     }
-    shell.openExternal(url);
+    openOutside(url);
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => {
-    if (!sameOrigin(url)) { e.preventDefault(); shell.openExternal(url); }
+    if (!sameOrigin(url)) { e.preventDefault(); openOutside(url); }
   });
   win.webContents.on('did-create-window', (child) => wireLinks(child));
 }

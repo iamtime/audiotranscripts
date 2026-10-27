@@ -173,6 +173,8 @@ def frames_payload(project: str, sid: str) -> dict:
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     ap = argparse.ArgumentParser(description="Score auto frames against the transcript and pick the top N")
     ap.add_argument("project")
     ap.add_argument("sid")

@@ -670,6 +670,8 @@ figure img+img{{margin-top:4px;opacity:.85}}figcaption{{padding:4px 2px}}</style
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     ap = argparse.ArgumentParser(description="Level-0 auto frames on a video file (offline tuning)")
     ap.add_argument("video", type=Path)
     ap.add_argument("--out", type=Path, required=True, help="Output folder (scenes.json, JPEGs, index.html)")

@@ -8,6 +8,7 @@ MCP servers configured for the working directory (e.g. claude-context).
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -16,6 +17,16 @@ def claude_binary() -> str | None:
     pinned = os.environ.get("VOICE_REC_CLAUDE")
     if pinned and os.access(pinned, os.X_OK):
         return pinned
+    if sys.platform == "win32":
+        # Prefer the native claude.exe: npm's claude.cmd goes through cmd.exe, which mangles
+        # arguments with quotes and newlines (the system prompt).
+        for p in ("~/.local/bin/claude.exe", "~/.claude/local/claude.exe"):
+            p = os.path.expanduser(p)
+            if os.path.isfile(p):
+                return p
+        found = shutil.which("claude.exe")
+        if found:
+            return found
     found = shutil.which("claude")
     if found:
         return found
@@ -25,6 +36,16 @@ def claude_binary() -> str | None:
         if os.access(p, os.X_OK):
             return p
     return None
+
+
+def edit_rule(directory: str | Path) -> str:
+    """A permission rule that allows Write/Edit/MultiEdit only inside `directory`.
+    Absolute paths are written as //path; on Windows D:/x becomes //d/x."""
+    p = Path(directory).resolve()
+    posix = p.as_posix()
+    if p.drive:                                    # D:/x → /d/x
+        posix = "/" + p.drive.rstrip(":").lower() + posix[len(p.drive):]
+    return f"Edit(/{posix.rstrip('/')}/**)"
 
 
 def build_command(model: str, allowed_tools: list[str], add_dirs: list[str | Path] = (),
