@@ -126,7 +126,7 @@ def load_vad():
 
 
 def audio_callback(indata, frames, time_info, status):
-    """sounddevice callback — push mono float32 frames into audio_queue."""
+    """sounddevice callback - push mono float32 frames into audio_queue."""
     if status:
         print(f"[audio] {status}", file=sys.stderr)
     data = indata[:, 0].copy()
@@ -928,11 +928,11 @@ def main():
                         help="Where Whisper and the speaker model run: cpu (default), cuda (NVIDIA GPU), "
                              "or auto (cuda when available)")
     parser.add_argument("--source", default="mic", metavar="SOURCE",
-                        help="What to transcribe: mic (default); app:<bundle-id> — one app's audio, e.g. "
-                             "app:com.microsoft.teams2 (macOS 14.2+); app+mic:<bundle-id> — the app and the "
-                             "microphone, lines marked [Them] / [Me]; file:<path> — an audio file (mp3, m4a, "
+                        help="What to transcribe: mic (default); app:<bundle-id> - one app's audio, e.g. "
+                             "app:com.microsoft.teams2 (macOS 14.2+); app+mic:<bundle-id> - the app and the "
+                             "microphone, lines marked [Them] / [Me]; file:<path> - an audio file (mp3, m4a, "
                              "wav, ...), timestamps are positions in the file. See audio_helper --list. "
-                             "On Windows the app is app:system — everything the speakers play")
+                             "On Windows the app is app:system - everything the speakers play")
     args = parser.parse_args()
     source_kind, _, source_arg = args.source.partition(":")
     if source_kind not in ("mic", "app", "app+mic", "file") or (source_kind != "mic" and not source_arg):
@@ -1010,10 +1010,10 @@ def main():
         # An audio file's timestamps are positions in the file (00:00:00 = its start).
         "start_time": datetime.combine(datetime.now().date(), datetime.min.time())
         if source_kind == "file" else datetime.now(),
-        "segments": [],     # list[AsrSegment]  — filled by transcription_worker
-        "windows": [],      # list[EmbeddingWindow] — filled by embed_worker
+        "segments": [],     # list[AsrSegment]  - filled by transcription_worker
+        "windows": [],      # list[EmbeddingWindow] - filled by embed_worker
         "injections": [],   # list[(t_relative, marker_text)]
-        "fixed": [],        # list[(t_relative, label, text)] — lines with a known speaker ("Me")
+        "fixed": [],        # list[(t_relative, label, text)] - lines with a known speaker ("Me")
     }
     events.emit("session", project=args.project, project_dir=str(project_dir.resolve()),
                 transcript_path=str(output_path.resolve()), timestamp=timestamp,

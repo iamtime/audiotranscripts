@@ -2,7 +2,7 @@ import Cocoa
 import Carbon
 import CoreGraphics
 
-// screenshot_helper — native macOS companion for main.py / server.py
+// screenshot_helper - native macOS companion for main.py / server.py
 //
 // Modes:
 //   screenshot_helper <output-dir> [capture-config.json]
@@ -146,7 +146,7 @@ func writePNG(_ image: CGImage, _ path: String) -> Bool {
 
 // ── Coordinates ──────────────────────────────────────────────────────────────
 
-/// Height of the primary screen — CG global coords have a top-left origin there.
+/// Height of the primary screen - CG global coords have a top-left origin there.
 func primaryHeight() -> CGFloat { NSScreen.screens.first?.frame.height ?? 0 }
 
 func cocoaToCG(_ p: NSPoint) -> CGPoint { CGPoint(x: p.x, y: primaryHeight() - p.y) }
@@ -438,7 +438,7 @@ final class OverlayView: NSView {
             if controller.mode == .window, let w = controller.hovered {
                 let owner = w[kCGWindowOwnerName as String] as? String ?? ""
                 let title = w[kCGWindowName as String] as? String ?? ""
-                label = title.isEmpty ? owner : "\(owner) — \(title)"
+                label = title.isEmpty ? owner : "\(owner) - \(title)"
             }
             drawPill(label, at: NSPoint(x: local.minX, y: local.maxY + 8), accent: accent)
         }
@@ -520,7 +520,7 @@ default:
 gScreenshotDir = args[1]
 if args.count > 2 { gConfigPath = args[2] }
 
-// Carbon event handler — dispatch by hotkey ID
+// Carbon event handler - dispatch by hotkey ID
 let handler: EventHandlerUPP = { (_, event, _) -> OSStatus in
     var hkID = EventHotKeyID()
     GetEventParameter(

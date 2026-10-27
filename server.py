@@ -733,7 +733,7 @@ class ChatManager:
         else:
             # First question, or the transcript was rewritten (e.g. speakers assigned): send it in full.
             intro = "Updated full transcript (it was re-processed)" if data["claude_session"] else "Transcript"
-            body = (f"{intro} — file: {path} ({status}).\n"
+            body = (f"{intro} - file: {path} ({status}).\n"
                     + f"<transcript>\n{transcript}</transcript>\n\n")
         data["sent_len"] = len(transcript)
         data["sent_hash"] = hashlib.md5(transcript.encode()).hexdigest()

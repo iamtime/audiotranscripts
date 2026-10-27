@@ -3,7 +3,7 @@
 
 Which frame matters is decided by the transcript, not the picture: what was being said while
 the scene was on screen. Per scene (revisits of the same image are pooled) we compute
-  deixis    "вот здесь", "как видите", "on this slide"… — the speaker points at the screen
+  deixis    "вот здесь", "как видите", "on this slide"… - the speaker points at the screen
   duration  how long it was shown
   words     how much was said meanwhile
   novelty   how different it was from the previous scene

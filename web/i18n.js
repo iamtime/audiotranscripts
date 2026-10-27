@@ -1,4 +1,4 @@
-/* voice-rec studio — UI translation layer.
+/* voice-rec studio - UI translation layer.
  *
  * Self-contained: app.js renders English; this file translates the rendered DOM (text nodes and
  * a few attributes) from exact English strings, and keeps translating whatever app.js renders
@@ -66,11 +66,11 @@
         'Teams transcript of the same meeting (.vtt, .docx, .txt)': 'Транскрипт Teams той же встречи (.vtt, .docx, .txt)',
         'Upload…': 'Загрузить…',
         // Notes placeholder: the "## Corrections" / "## Who said it" headings are parsed by the server, keep them.
-        'e.g.\nWe are the ... team. Client: ... \nSpeaker at 11:06 is .....\nDon\'t call the system “XXXXX” — it\'s XXXXXY.\n\n## Corrections (speech-to-text: heard → meant)\n- "hybrids" → "Hybris"\n\n## Who said it (quote <-- who said it)\n- "Let\'s come back to pricing later" <-- Jane Doe':
-          'например:\nМы — команда ... Клиент: ...\nСпикер в 11:06 — это .....\nНе называть систему «XXXXX» — правильно XXXXXY.\n\n## Corrections (распознано → должно быть)\n- "гибриды" → "Hybris"\n\n## Who said it (цитата <-- кто сказал)\n- "Вернёмся к ценам позже" <-- Иван Петров',
+        'e.g.\nWe are the ... team. Client: ... \nSpeaker at 11:06 is .....\nDon\'t call the system “XXXXX” - it\'s XXXXXY.\n\n## Corrections (speech-to-text: heard → meant)\n- "hybrids" → "Hybris"\n\n## Who said it (quote <-- who said it)\n- "Let\'s come back to pricing later" <-- Jane Doe':
+          'например:\nМы - команда ... Клиент: ...\nСпикер в 11:06 - это .....\nНе называть систему «XXXXX» - правильно XXXXXY.\n\n## Corrections (распознано → должно быть)\n- "гибриды" → "Hybris"\n\n## Who said it (цитата <-- кто сказал)\n- "Вернёмся к ценам позже" <-- Иван Петров',
         'Connecting…': 'Подключение…',
         'Connected': 'Подключено',
-        'Disconnected from server — retrying…': 'Нет связи с сервером — переподключение…',
+        'Disconnected from server - retrying…': 'Нет связи с сервером - переподключение…',
         'screenshot': 'скриншот',
         'selected text': 'выделенный текст',
         'Recognizer console': 'Консоль распознавателя',
@@ -101,7 +101,7 @@
         // ── Recorder control strip ──
         'Transcribe file': 'Распознать файл',
         'Start recording': 'Начать запись',
-        'times are positions in the file': 'время — позиция в файле',
+        'times are positions in the file': 'время - позиция в файле',
         'Appends to': 'Дописывается в',
         'new session instead': 'лучше новая сессия',
         'Starts a new session': 'Начнётся новая сессия',
@@ -148,7 +148,7 @@
         'Stop automatic frames': 'Остановить автокадры',
         'Take a screenshot of the capture area': 'Сделать скриншот области захвата',
         'How long a silence ends a phrase. Shorter: text appears sooner, in smaller pieces. Longer: fewer, longer chunks. Can be changed while recording.':
-          'Сколько должна длиться тишина, чтобы фраза закончилась. Короче — текст появляется быстрее, мелкими кусками. Длиннее — кусков меньше, но они длиннее. Можно менять во время записи.',
+          'Сколько должна длиться тишина, чтобы фраза закончилась. Короче - текст появляется быстрее, мелкими кусками. Длиннее - кусков меньше, но они длиннее. Можно менять во время записи.',
         'Phrase gap': 'Пауза фразы',
         'Stopping': 'Остановка',
         'Pick the app whose audio to transcribe': 'Выберите приложение, звук которого нужно распознавать',
@@ -165,8 +165,8 @@
         'No apps with audio': 'Нет приложений со звуком',
         'All system audio': 'Весь системный звук',
         '⚠ All apps are recorded': '⚠ Пишутся все приложения',
-        "This Windows can't record a single app (it needs Windows 10 2004+ with process loopback, or Windows 11): all system audio is recorded — mute other sounds":
-          'Эта версия Windows не умеет записывать одно приложение (нужна Windows 10 2004+ с process loopback или Windows 11): записывается весь системный звук — выключите лишние звуки',
+        "This Windows can't record a single app (it needs Windows 10 2004+ with process loopback, or Windows 11): all system audio is recorded - mute other sounds":
+          'Эта версия Windows не умеет записывать одно приложение (нужна Windows 10 2004+ с process loopback или Windows 11): записывается весь системный звук - выключите лишние звуки',
         'Refresh the list of apps': 'Обновить список приложений',
         "Audio file to transcribe (stored in the project's audio folder)": 'Аудиофайл для распознавания (хранится в папке audio проекта)',
         'Upload another file…': 'Загрузить другой файл…',
@@ -338,7 +338,7 @@
         'Watching the capture area for ~6 s': 'Наблюдаю за областью захвата ~6 с',
         'keep the video playing': 'не останавливайте видео',
         'Drag on screen to select the area': 'Выделите область на экране',
-        'Esc to cancel': 'Esc — отмена',
+        'Esc to cancel': 'Esc - отмена',
         'Click the window to capture': 'Щёлкните по окну, которое нужно снимать',
         'Capture preview': 'Предпросмотр захвата',
         'No preview yet': 'Предпросмотра пока нет',
@@ -346,7 +346,7 @@
         'Refresh preview': 'Обновить предпросмотр',
         'Auto frames:': 'Автокадры:',
         'the framed part only': 'только часть в рамке',
-        'drag to move, edges to resize': 'перетаскивайте рамку, края — для изменения размера',
+        'drag to move, edges to resize': 'перетаскивайте рамку, края - для изменения размера',
         'Detect again': 'Определить заново',
         'Use whole area': 'Вся область',
         "Auto frames use the whole area. If the video is only part of it (a browser or call window), detect it so slide changes aren't drowned out by the page.":
@@ -402,7 +402,7 @@
         'Model': 'Модель',
         'Test': 'Проверить',
         "With an API, Beautify is one pass over the transcript and the screenshots' text (no images, no tools); chat sees the transcript and your notes.":
-          'Через API оформление — это один проход по транскрипту и тексту скриншотов (без изображений и инструментов); чат видит транскрипт и ваши заметки.',
+          'Через API оформление - это один проход по транскрипту и тексту скриншотов (без изображений и инструментов); чат видит транскрипт и ваши заметки.',
         'Using the key from the environment': 'Используется ключ из переменных окружения',
         'Optional for local servers': 'Необязателен для локальных серверов',
         'Paste your API key': 'Вставьте API-ключ',
@@ -418,7 +418,7 @@
         'CPU': 'CPU',
         "Where Whisper and the speaker model run. An NVIDIA GPU makes Whisper several times faster; it falls back to the CPU if CUDA doesn't load.":
           'Где работают Whisper и модель голосов. С видеокартой NVIDIA Whisper в разы быстрее; если CUDA не загрузится, используется CPU.',
-        'Screenshots are off — pip install mss pillow': 'Скриншоты выключены — выполните pip install mss pillow',
+        'Screenshots are off - pip install mss pillow': 'Скриншоты выключены - выполните pip install mss pillow',
         'Screenshots are off: the screenshot helper is missing': 'Скриншоты выключены: нет помощника скриншотов',
         'model name': 'название модели',
         'Asking Claude…': 'Спрашиваю Claude…',
@@ -466,8 +466,8 @@
         "e.g. product name, person's name": 'например, название продукта, имя человека',
 
         // ── Boot ──
-        'Screenshots are off — pip install mss pillow': 'Скриншоты отключены — pip install mss pillow',
-        'screenshot_helper binary is missing — run ./compile.sh': 'Нет бинарника screenshot_helper — запустите ./compile.sh',
+        'Screenshots are off - pip install mss pillow': 'Скриншоты отключены - pip install mss pillow',
+        'screenshot_helper binary is missing - run ./compile.sh': 'Нет бинарника screenshot_helper - запустите ./compile.sh',
 
         // ── Server messages (server.py, main.py, llm_api.py, beautify.py, claude_cli.py, sessions.py, external.py …) ──
         'A recording is already running': 'Запись уже идёт',
@@ -636,7 +636,7 @@
         // Beautify
         [/^Beautifying v(\d+)$/, 'Оформление v$1'],
         [/^⚠ v(\d+) failed$/, '⚠ v$1: ошибка'],
-        [/^(.+) — click to set up$/, (p) => `${tr(p)} — нажмите, чтобы настроить`],
+        [/^(.+) - click to set up$/, (p) => `${tr(p)} - нажмите, чтобы настроить`],
         [/^Extends v(.+) with new speech and screenshots$/, 'Дополняет v$1 новой речью и скриншотами'],
         [/^AI: (.+)$/, 'ИИ: $1'],
         [/^Beautified (.+) \(v(\d+)\)$/, 'Оформлено: $1 (v$2)'],
@@ -671,7 +671,7 @@
           `✓ Работает${r != null ? ` (ответ: «${r}»)` : ''}${n ? ` · доступно моделей: ${n}` : ''}`],
         [/^✗ ([\s\S]+)$/, (e) => `✗ ${tr(e)}`],
         [/^Key saved \((.+)\)$/, 'Ключ сохранён ($1)'],
-        [/^Saved: (.+) — type to replace$/, 'Сохранён: $1 — введите новый, чтобы заменить'],
+        [/^Saved: (.+) - type to replace$/, 'Сохранён: $1 - введите новый, чтобы заменить'],
         [/^Saved, but: ([\s\S]*)$/, (p) => `Сохранено, но: ${tr(p)}`],
         [/^Add the (.+) API key$/, 'Добавьте API-ключ $1'],
         [/^Not found \(wrong model name or host\): ([\s\S]*)$/, 'Не найдено (неверное имя модели или хост): $1'],
@@ -797,7 +797,7 @@
   // (log lines, the OCR text, project / window / app / file names).
   const isArea = s => /^\d+ × \d+ at -?\d+, -?\d+$/.test(s);
   const RESTRICTED = [
-    ['#lastLog', s => ['Connecting…', 'Connected', 'Disconnected from server — retrying…'].includes(s)],
+    ['#lastLog', s => ['Connecting…', 'Connected', 'Disconnected from server - retrying…'].includes(s)],
     ['#lbOcr', s => ['Loading OCR text…', '(no text recognized)', 'OCR is not ready yet.', 'OCR is not available.'].includes(s)],
     ['#projectName', s => s === 'Choose…'],
     ['#captureLabel, .pv-label', s => s === 'Full screen' || isArea(s)],

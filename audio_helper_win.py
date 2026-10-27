@@ -40,7 +40,7 @@ LATENCY = int(0.3 * RATE)     # how long to wait for late audio before writing s
 MAX_AHEAD = RATE              # more than 1 s ahead of the clock: drop the oldest
 SYSTEM = "system"
 NO_APPS = ("This Windows can't record a single app (it needs Windows 10 2004+ with process loopback, "
-           "or Windows 11): all system audio is recorded — mute other sounds")
+           "or Windows 11): all system audio is recorded - mute other sounds")
 # Parents that start apps rather than being the app the user knows.
 LAUNCHERS = {"explorer.exe", "svchost.exe", "services.exe", "wininit.exe", "winlogon.exe", "sihost.exe",
              "runtimebroker.exe", "applicationframehost.exe", "cmd.exe", "powershell.exe", "pwsh.exe",

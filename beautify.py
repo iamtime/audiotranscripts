@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Beautify: turn a raw transcript (+ screenshots) into a FULL annotated HTML
-transcript — every utterance kept, real speakers identified, callouts comparing
+transcript - every utterance kept, real speakers identified, callouts comparing
 the discussion with what is already known (via claude-context MCP when available).
 
 Each run produces a new version in projects/<project>/sessions/<sid>/vN.html.
@@ -42,7 +42,7 @@ Create the {mode_title} of a FULL annotated transcript of a recorded session, as
 ## Inputs
 - Raw speech-to-text transcript (snapshot): {input}
   {n_lines} lines, {t_first}–{t_last}{live_note}
-  Line formats: "[HH:MM:SS] text"; "[HH:MM:SS] [Speaker N] text" (automatic diarization: usually heavily over-split, treat speaker numbers only as weak hints); "[HH:MM:SS] [Me] text" / "[HH:MM:SS] [Them] text" (a call recorded as two channels: Me = the person recording, from their microphone — reliable; Them = everyone else, from the call app's audio; with diarization the Them lines become [Speaker N] next to the [Me] ones); "[HH:MM:SS] [screenshot: /abs/path.png]" (the screen was captured at that moment); "[HH:MM:SS] [selection: text]" (text the presenter highlighted on screen).
+  Line formats: "[HH:MM:SS] text"; "[HH:MM:SS] [Speaker N] text" (automatic diarization: usually heavily over-split, treat speaker numbers only as weak hints); "[HH:MM:SS] [Me] text" / "[HH:MM:SS] [Them] text" (a call recorded as two channels: Me = the person recording, from their microphone - reliable; Them = everyone else, from the call app's audio; with diarization the Them lines become [Speaker N] next to the [Me] ones); "[HH:MM:SS] [screenshot: /abs/path.png]" (the screen was captured at that moment); "[HH:MM:SS] [selection: text]" (text the presenter highlighted on screen).
 - Screenshots taken during the session. View them with the Read tool: they show slides, documents, shared screens and often the meeting's participant list, so use them to identify speakers and to fix names, product names and technical terms. OCR text sits next to each image (.txt) if you need it.
 {shots}
 - Style reference: {style}
@@ -111,8 +111,8 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
     entries = parse_transcript(text)
     raw_lines = text.splitlines()
     timed = [l for l in raw_lines if l.startswith("[")]
-    t_first = entries[0]["time"] if entries else "—"
-    t_last = entries[-1]["time"] if entries else "—"
+    t_first = entries[0]["time"] if entries else "-"
+    t_last = entries[-1]["time"] if entries else "-"
     shots = []
     for e in entries:
         if e["kind"] == "screenshot" and Path(e["path"]).exists():
@@ -250,7 +250,7 @@ def html_stats(html: str, shot_names: list[str]) -> dict:
 
 
 def _slug(title: str) -> str:
-    t = re.split(r"\s[—–-]\s|\(", title)[0] if title else ""
+    t = re.split(r"\s[-–-]\s|\(", title)[0] if title else ""
     s = re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")
     return "-".join(s.split("-")[:6]) or "session"
 

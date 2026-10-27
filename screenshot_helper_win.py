@@ -632,7 +632,7 @@ def overlay(mode: str) -> int:
         st["hover"] = hit
         if hit:
             owner, title = owner_name(hit[0]), _window_text(hit[0])
-            show(hit[1], f"{owner} — {title}" if title else owner, force=True)
+            show(hit[1], f"{owner} - {title}" if title else owner, force=True)
         else:
             show(None, "")
 
