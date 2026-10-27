@@ -52,10 +52,10 @@ def debug_session(data):
     print(f"\nPhrases:")
     for i, w in enumerate(windows):
         dur = w.t_end - w.t_start
-        print(f"  [{i:2d}] {w.t_start:7.1f}s — {w.t_end:7.1f}s  ({dur:.1f}s)")
+        print(f"  [{i:2d}] {w.t_start:7.1f}s - {w.t_end:7.1f}s  ({dur:.1f}s)")
 
     if len(windows) < 2:
-        print("\nOnly 1 window — cannot compute distances.")
+        print("\nOnly 1 window - cannot compute distances.")
         return
 
     # Pairwise cosine distances
@@ -83,7 +83,7 @@ def debug_session(data):
 
     # Hint
     if upper.max() < 0.3:
-        print(f"\n⚠ Max distance is only {upper.max():.3f} — embeddings are very similar.")
+        print(f"\n⚠ Max distance is only {upper.max():.3f} - embeddings are very similar.")
         print("  Possible causes:")
         print("  - Phrases contain mixed audio from both speakers (gap too short)")
         print("  - Single microphone far from speakers (room acoustics dominate)")
@@ -171,6 +171,8 @@ def build_diarized_lines(data, num_speakers, cluster_threshold):
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     parser = argparse.ArgumentParser(
         description="Re-run diarization with different parameters",
         epilog="Examples:\n"

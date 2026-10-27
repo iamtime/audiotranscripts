@@ -3,7 +3,7 @@ import AVFoundation
 import CoreAudio
 import AppKit
 
-// audio_helper — native macOS companion for main.py: capture one app's audio.
+// audio_helper - native macOS companion for main.py: capture one app's audio.
 //
 // Modes:
 //   audio_helper --list

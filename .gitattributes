@@ -1,0 +1,17 @@
+# Line endings: LF everywhere (also in the working copy on Windows, whatever core.autocrlf
+# says), except scripts that Windows itself runs: cmd.exe and PowerShell 5 expect CRLF.
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Binaries: never touch
+*.png  binary
+*.icns binary
+*.ico  binary
+*.jpg  binary
+screenshot_helper binary
+audio_helper binary

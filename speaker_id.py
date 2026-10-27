@@ -1,5 +1,6 @@
 """Speaker embedding and diarization utilities."""
 
+import sys
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -36,10 +37,18 @@ class SpeakerEmbedder:
         except ImportError:
             from speechbrain.pretrained import EncoderClassifier
         import downloads
+        extra = {}
+        if sys.platform == "win32":   # symlinks into the HF cache need admin / developer mode there
+            try:
+                from speechbrain.utils.fetching import LocalStrategy
+                extra["local_strategy"] = LocalStrategy.COPY
+            except ImportError:
+                pass
         with downloads.watch_hf("speechbrain/spkrec-ecapa-voxceleb", "Speaker model (ECAPA)"):
             self.model = EncoderClassifier.from_hparams(
                 source="speechbrain/spkrec-ecapa-voxceleb",
                 run_opts={"device": device},
+                **extra,
             )
 
     def embed(self, audio: np.ndarray) -> np.ndarray:

@@ -67,7 +67,7 @@ class Params:
 def prep(image: np.ndarray | None = None, path: str | None = None, width: int = 256) -> np.ndarray | None:
     """Small blurred grayscale copy used for all comparisons."""
     if image is None:
-        # Decode at 1/4 size straight away — a Retina JPEG is ~3456 px wide.
+        # Decode at 1/4 size straight away - a Retina JPEG is ~3456 px wide.
         image = cv2.imread(path, cv2.IMREAD_REDUCED_GRAYSCALE_4)
         if image is None:
             return None
@@ -111,7 +111,7 @@ def content_mask(small: np.ndarray) -> np.ndarray:
 
 
 def content_change(a: np.ndarray, b: np.ndarray, thresh: int, mask: np.ndarray | None) -> float:
-    """Share of the slides' content (union of both) that changed — 1.0 if shapes differ."""
+    """Share of the slides' content (union of both) that changed - 1.0 if shapes differ."""
     moved = changed_map(a, b, thresh)
     if moved is None:
         return 1.0
@@ -126,7 +126,7 @@ def content_change(a: np.ndarray, b: np.ndarray, thresh: int, mask: np.ndarray |
 
 
 def edge_density(small: np.ndarray) -> float:
-    """Share of edge pixels — text-heavy screens score high, camera pictures low."""
+    """Share of edge pixels - text-heavy screens score high, camera pictures low."""
     return float((cv2.Canny(small, 60, 160) > 0).mean())
 
 
@@ -670,6 +670,8 @@ figure img+img{{margin-top:4px;opacity:.85}}figcaption{{padding:4px 2px}}</style
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     ap = argparse.ArgumentParser(description="Level-0 auto frames on a video file (offline tuning)")
     ap.add_argument("video", type=Path)
     ap.add_argument("--out", type=Path, required=True, help="Output folder (scenes.json, JPEGs, index.html)")

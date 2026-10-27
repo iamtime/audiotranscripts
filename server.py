@@ -17,6 +17,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -36,6 +37,7 @@ import claude_cli
 import downloads
 import llm_api
 import external
+import native_helpers
 import select_frames as SF
 import sessions as S
 
@@ -43,9 +45,7 @@ ENGINES = ("whisper", "gigaam", "parakeet")   # main.py --engine (see asr_engine
 
 ROOT = S.ROOT
 WEB_DIR = ROOT / "web"
-HELPER = ROOT / "screenshot_helper"
 CAPTURE_CONFIG = S.WEBUI_DIR / "capture.json"
-AUDIO_HELPER = ROOT / "audio_helper"     # app audio capture (audio_helper.swift)
 SOURCES = ("mic", "app+mic", "app", "file")   # main.py --source kinds
 CAPTURE_PREVIEW = S.WEBUI_DIR / "capture_preview.png"
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -79,13 +79,21 @@ hub = Hub()
 
 async def run_cmd(*cmd, timeout=120) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.PIPE)
+                                                stderr=asyncio.subprocess.PIPE, env=native_helpers.child_env())
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
         proc.kill()
         return -1, "", "timeout"
-    return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+    return proc.returncode, out.decode("utf-8", errors="replace"), err.decode("utf-8", errors="replace")
+
+
+async def run_helper(*args, timeout=120) -> tuple[int, str, str]:
+    """Run the screenshot helper (see native_helpers); rc -1 when there is none."""
+    cmd = native_helpers.screenshot_cmd()
+    if not cmd:
+        return -1, "", f"screenshot_helper is missing ({native_helpers.screenshot_build_hint()})"
+    return await run_cmd(*cmd, *args, timeout=timeout)
 
 
 # ── Recorder (main.py subprocess) ────────────────────────────────────────────
@@ -203,8 +211,8 @@ class Recorder:
             app_id = str(opts.get("source_app") or "").strip()
             if not app_id:
                 raise HTTPException(400, "Pick the app whose audio to transcribe")
-            if not AUDIO_HELPER.exists():
-                raise HTTPException(400, "App audio needs audio_helper (run ./build_audio_helper.sh)")
+            if not native_helpers.audio_cmd():
+                raise HTTPException(400, f"App audio needs audio_helper ({native_helpers.audio_build_hint()})")
             cmd += ["--source", f"{source}:{app_id}"]
         elif source == "file":
             path = audio_file_path(project, str(opts.get("source_file") or ""))
@@ -223,11 +231,16 @@ class Recorder:
             self.shots = {s["path"]: s for s in existing["screenshots"]}
         self.pipeline["pause"] = float(opts.get("pause") or 1.5)
 
+        cmd += ["--device", settings.get("device") or "auto"]
         self.log.append("$ " + " ".join(cmd[1:]))
+        # Own session / process group: Ctrl+C in the server's console doesn't reach it
+        # (Windows: no SIGINT for children, stop() sends STOP on stdin instead).
+        detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                  if native_helpers.IS_WINDOWS else {"start_new_session": True})
         self.proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=str(S.DATA_ROOT), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT, start_new_session=True,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"}, limit=STREAM_LIMIT)
+            stderr=asyncio.subprocess.STDOUT, **detach,
+            env=native_helpers.child_env(), limit=STREAM_LIMIT)
         S.save_settings({"last_project": project, **{k: opts[k] for k in
                          ("engine", "lang", "speakers", "minutes", "pause", "save_audio", "auto_frames",
                           "source", "source_app")
@@ -238,10 +251,17 @@ class Recorder:
         loop.create_task(self._tail_events(events_path))
         loop.create_task(self._wait_exit(events_path))
 
+    def interrupt(self):
+        """Same as Ctrl+C in the console: finish the phrase, diarize, save."""
+        if native_helpers.IS_WINDOWS:            # no SIGINT for child processes on Windows
+            self.proc.stdin.write(b"STOP\n")
+        else:
+            self.proc.send_signal(signal.SIGINT)
+
     async def stop(self):
         if not self.active:
             return
-        self.proc.send_signal(signal.SIGINT)      # same as Ctrl+C in the console
+        self.interrupt()
         if self.state in ("loading", "listening"):
             self.set_state("stopping", "Stopping")
 
@@ -713,7 +733,7 @@ class ChatManager:
         else:
             # First question, or the transcript was rewritten (e.g. speakers assigned): send it in full.
             intro = "Updated full transcript (it was re-processed)" if data["claude_session"] else "Transcript"
-            body = (f"{intro} — file: {path} ({status}).\n"
+            body = (f"{intro} - file: {path} ({status}).\n"
                     + f"<transcript>\n{transcript}</transcript>\n\n")
         data["sent_len"] = len(transcript)
         data["sent_hash"] = hashlib.md5(transcript.encode()).hexdigest()
@@ -842,7 +862,7 @@ async def lifespan(app: FastAPI):
     yield
     if recorder.active:
         print("Stopping the running recording (finalizing, please wait)...")
-        recorder.proc.send_signal(signal.SIGINT)
+        recorder.interrupt()
         try:
             await asyncio.wait_for(recorder.proc.wait(), 600)
         except asyncio.TimeoutError:
@@ -852,7 +872,57 @@ async def lifespan(app: FastAPI):
             p.terminate()
 
 
+# ── Local-only guard ─────────────────────────────────────────────────────────
+# The API has no login: it trusts whoever can reach 127.0.0.1. Browsers let any web page
+# send requests there (CSRF: start a recording, swap the LLM endpoint to steal API keys,
+# open the WebSocket to listen in) or reach it under its own domain (DNS rebinding).
+# So: the Host must be ours, and a browser's Origin, when sent, must be the page itself.
+
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}    # + --host / --allow-host
+
+
+def _host_only(hostport: str) -> str:
+    hostport = hostport.strip().lower()
+    if hostport.startswith("["):                      # [::1]:8765
+        return hostport[1:].split("]", 1)[0]
+    return hostport.rsplit(":", 1)[0] if hostport.count(":") == 1 else hostport
+
+
+def _forbidden(scope) -> str | None:
+    headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+    host = headers.get("host", "")
+    if _host_only(host) not in ALLOWED_HOSTS:
+        return f"Host {host!r} is not allowed"
+    origin = headers.get("origin")
+    if origin is not None:
+        o = origin.lower()
+        if "://" not in o or o.split("://", 1)[1].rstrip("/") != host.lower():
+            return f"Origin {origin!r} is not allowed"
+    return None
+
+
+class LocalOnly:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            reason = _forbidden(scope)
+            if reason:
+                print(f"[server] refused {scope['type']} {scope.get('path')}: {reason}", file=sys.stderr)
+                if scope["type"] == "websocket":
+                    await receive()                       # websocket.connect
+                    await send({"type": "websocket.close", "code": 1008})
+                    return
+                await send({"type": "http.response.start", "status": 403,
+                            "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
+                await send({"type": "http.response.body", "body": reason.encode()})
+                return
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(LocalOnly)
 S.PROJECTS_DIR.mkdir(exist_ok=True)
 app.mount("/files", StaticFiles(directory=str(S.PROJECTS_DIR)), name="files")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
@@ -863,8 +933,14 @@ async def no_stale_frontend(request, call_next):
     # Make the browser revalidate the UI files (cheap 304 via ETag), so an updated
     # app.js/style.css shows up without a hard reload.
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
+    if path.startswith("/files/"):
+        # Recordings, Beautify output and uploads are data: their HTML/SVG must never run
+        # script on the app's origin (an injected <script> would have the whole API).
+        response.headers["Content-Security-Policy"] = "script-src 'none'; object-src 'none'; base-uri 'none'"
+        response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -899,7 +975,8 @@ def _err(e: Exception):
 async def status():
     settings = S.load_settings()
     claude = bool(claude_cli.claude_binary())
-    return {"claude": claude, "helper": HELPER.exists(), "models": downloads.engine_models(),
+    return {"claude": claude, "helper": bool(native_helpers.screenshot_cmd()), "platform": sys.platform,
+            "models": downloads.engine_models(),
             "ai": llm_api.status(settings, claude), "bundled_python": bool(os.environ.get("VOICE_REC_RECORDER_PYTHON")),
             "settings": S.load_settings(), "recorder": recorder.snapshot()}
 
@@ -923,7 +1000,7 @@ async def ai_set(data: dict = Body(...)):
         if provider not in llm_api.PROVIDERS:
             _err(ValueError("Unknown provider"))
         upd.update(api_provider=provider, api_model=(data.get("model") or "").strip(),
-                   api_base_url=(data.get("base_url") or "").strip())
+                   api_base_url=llm_api.normalize_base_url(provider, data.get("base_url") or ""))
         if data.get("api_key"):
             llm_api.set_key(provider, data["api_key"])
         elif data.get("clear_key"):
@@ -981,7 +1058,10 @@ async def get_settings():
 
 @app.post("/api/settings")
 async def set_settings(data: dict = Body(...)):
-    return S.save_settings(data)
+    try:
+        return S.save_settings(data)
+    except ValueError as e:
+        _err(e)
 
 
 @app.get("/api/projects")
@@ -1007,7 +1087,10 @@ async def project_settings(project: str):
 
 @app.post("/api/projects/{project}/settings")
 async def save_project_settings(project: str, data: dict = Body(...)):
-    return S.save_project_settings(project, data)
+    try:
+        return S.save_project_settings(project, data)
+    except ValueError as e:
+        _err(e)
 
 
 @app.get("/api/projects/{project}/sessions")
@@ -1097,15 +1180,15 @@ def _external_state(project: str) -> dict:
 
 @app.get("/api/audio/apps")
 async def audio_apps():
-    """Apps connected to Core Audio (audio_helper --list), the ones playing sound first."""
-    if not AUDIO_HELPER.exists():
-        return {"available": False, "apps": [], "error": "audio_helper is not built (./build_audio_helper.sh)"}
+    """Apps connected to Core Audio (audio_helper --list), the ones playing sound first.
+    On Windows: one entry, the system audio (WASAPI loopback)."""
+    helper = native_helpers.audio_cmd()
+    if not helper:
+        return {"available": False, "apps": [], "error": f"audio_helper is missing ({native_helpers.audio_build_hint()})"}
     try:
-        proc = await asyncio.create_subprocess_exec(str(AUDIO_HELPER), "--list", stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.PIPE)
-        out, err = await asyncio.wait_for(proc.communicate(), 10)
-        if proc.returncode != 0:
-            raise RuntimeError(err.decode(errors="replace").strip() or f"exit code {proc.returncode}")
+        rc, out, err = await run_cmd(*helper, "--list", timeout=15)
+        if rc != 0:
+            raise RuntimeError(err.strip() or f"exit code {rc}")
         apps = [a for a in json.loads(out) if not a["bundle"].startswith(("com.voicerec", "com.github.Electron"))]
         return {"available": True, "apps": apps, "error": ""}
     except Exception as e:
@@ -1360,8 +1443,7 @@ def _capture_info() -> dict:
 
 
 async def _refresh_preview():
-    if HELPER.exists():
-        await run_cmd(str(HELPER), "--capture", str(CAPTURE_CONFIG), str(CAPTURE_PREVIEW), timeout=20)
+    await run_helper("--capture", str(CAPTURE_CONFIG), str(CAPTURE_PREVIEW), timeout=20)
 
 
 @app.get("/api/capture")
@@ -1397,7 +1479,7 @@ async def capture_preview():
 async def capture_select(data: dict = Body(...)):
     """Show the native overlay: kind = 'region' (drag) or 'window' (click)."""
     flag = "--select-region" if data.get("kind") == "region" else "--pick-window"
-    rc, out, err = await run_cmd(str(HELPER), flag, timeout=100)
+    rc, out, err = await run_helper(flag, timeout=100)
     line = next((l for l in out.splitlines() if l.startswith(("REGION:", "WINDOW:"))), None)
     if not line:
         return JSONResponse({"cancelled": True, **_capture_info()})
@@ -1427,7 +1509,7 @@ async def capture_detect_video():
     try:
         for i in range(12):
             out = tmp / f"f{i:02d}.png"
-            rc, _, err = await run_cmd(str(HELPER), "--capture", str(raw_cfg), str(out), timeout=20)
+            rc, _, err = await run_helper("--capture", str(raw_cfg), str(out), timeout=20)
             if rc == 0 and out.exists():
                 images.append(cv2.imread(str(out)))
             await asyncio.sleep(0.4)
@@ -1473,7 +1555,7 @@ async def capture_crop(data: dict = Body(default={})):
 
 @app.get("/api/capture/windows")
 async def capture_windows():
-    rc, out, err = await run_cmd(str(HELPER), "--list-windows", timeout=20)
+    rc, out, err = await run_helper("--list-windows", timeout=20)
     try:
         wins = json.loads(out)
     except json.JSONDecodeError:
@@ -1493,7 +1575,13 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="Another host name the UI may be opened by (e.g. this machine's LAN name with --host 0.0.0.0)")
     args = ap.parse_args()
+    native_helpers.utf8_stdio()
+    ALLOWED_HOSTS.update(h.lower() for h in [args.host, *args.allow_host] if h not in ("0.0.0.0", "::"))
+    if args.host in ("0.0.0.0", "::"):
+        print("Warning: the UI has no login; anyone on the network who can reach this port controls it.")
     import uvicorn
     url = f"http://{args.host}:{args.port}"
     print(f"voice-rec web UI: {url}")

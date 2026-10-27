@@ -11,7 +11,7 @@ so its load time and peak memory are measured separately.
 
 --ref: a hand-corrected transcript of the same --start/--dur range (plain text; lines
 like "[12:00:01] [Speaker 1] text" are accepted, the prefixes are stripped). With it,
-WER/CER are computed (jiwer). Don't run while the recorder is running — it competes
+WER/CER are computed (jiwer). Don't run while the recorder is running - it competes
 for the CPU.
 """
 
@@ -114,6 +114,8 @@ def normalize(text: str) -> str:
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("audio")
     ap.add_argument("--start", type=float, default=0.0, help="Offset into the recording, seconds")

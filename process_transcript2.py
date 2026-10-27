@@ -53,8 +53,8 @@ Requirements:
 
 CRITICAL OUTPUT RULES:
 - Output ONE complete static HTML file only. No markdown code fences.
-- The transcript entries MUST be written as literal, static HTML — one `<article class="dialog-bubble">` element per line of dialogue, with the speaker, timestamp and text already filled in as plain HTML text.
-- DO NOT use JavaScript template literals, `${...}` interpolation, IIFEs (`(() => {...})()`), `.map()`/`.forEach()` rendering, frameworks, or any client-side/runtime rendering to build the transcript or any other content. This is a plain static file, not a JS app — any `${...}` you write will appear to the user as raw code.
+- The transcript entries MUST be written as literal, static HTML - one `<article class="dialog-bubble">` element per line of dialogue, with the speaker, timestamp and text already filled in as plain HTML text.
+- DO NOT use JavaScript template literals, `${...}` interpolation, IIFEs (`(() => {...})()`), `.map()`/`.forEach()` rendering, frameworks, or any client-side/runtime rendering to build the transcript or any other content. This is a plain static file, not a JS app - any `${...}` you write will appear to the user as raw code.
 - JavaScript is allowed ONLY for the interactive behavior (tab switching, speaker filtering, live search) inside the `<script>` tag, exactly as in the skeleton below.
 
 Use the style patterns and logic shown in this skeleton:
@@ -596,6 +596,8 @@ def generate(client, provider: str, model: str, prompt: str) -> str:
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     parser = argparse.ArgumentParser(
         description="Process transcripts through Gemini",
         epilog="Examples:\n"
@@ -673,7 +675,7 @@ def main():
     print(f"Screenshot images: {len(screenshot_images)}")
 
     if not transcript_text:
-        date_range = args.date if not args.date_to else f"{args.date} — {args.date_to}"
+        date_range = args.date if not args.date_to else f"{args.date} - {args.date_to}"
         print(f"No transcripts found for {date_range}", file=sys.stderr)
         sys.exit(1)
 

@@ -1,0 +1,5 @@
+# faster-whisper on an NVIDIA GPU: CTranslate2 is built against CUDA 12 and needs cuBLAS
+# and cuDNN 9 (PyTorch brings its own copies, for its own CUDA version). main.py adds
+# their DLL folders on Windows (native_helpers.add_cuda_dll_dirs).
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10

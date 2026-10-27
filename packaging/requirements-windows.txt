@@ -1,0 +1,31 @@
+# Windows (setup_windows.ps1 installs PyTorch first, from the CUDA or CPU index, then this).
+# Lower bounds: the versions tested on Windows 10 22H2 / Python 3.12, and no known CVEs.
+faster-whisper>=1.2.1
+ctranslate2>=4.8.4
+onnx-asr[cpu,hub]>=0.12.0
+onnxruntime>=1.31.1
+silero-vad>=6.0
+sounddevice>=0.5.6
+numpy>=2.0
+easyocr>=1.7.2
+opencv-python-headless>=5.0
+scipy>=1.18
+scikit-image>=0.26
+scikit-learn>=1.9
+speechbrain>=1.1.2
+transformers>=5.21
+huggingface-hub>=1.0
+pillow>=13.0
+filelock>=4.2.1
+fastapi>=0.162
+uvicorn[standard]>=0.54
+python-multipart>=0.0.32
+openai>=3.0
+imageio-ffmpeg>=0.6.0
+jiwer>=4.0
+# Windows helpers: screenshots (screenshot_helper_win.py), system audio (audio_helper_win.py)
+mss>=10.2
+soundcard>=0.4.6
+comtypes>=1.4
+pycaw>=20240316
+psutil>=5.9

@@ -2,13 +2,15 @@
 
 Every provider is spoken to over the OpenAI-compatible chat-completions protocol
 (the openai SDK with a base URL): OpenAI, Gemini, Anthropic and OpenRouter offer
-such an endpoint, and so do local servers (Ollama, LM Studio, vLLM) -- "custom".
+such an endpoint, and so do local servers: Ollama, LM Studio, or any other ("custom":
+vLLM, llama.cpp server, a corporate gateway).
 
 API keys are kept out of settings.json, in .webui/secrets.json (mode 600);
 the usual environment variables (GEMINI_API_KEY, OPENAI_API_KEY, ...) work too.
 """
 
 import os
+from urllib.parse import urlsplit
 
 import sessions as S
 
@@ -25,8 +27,12 @@ PROVIDERS = {
     "openrouter": {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
                    "model": "google/gemini-2.5-flash", "env": ("OPENROUTER_API_KEY",),
                    "key_url": "https://openrouter.ai/keys"},
+    "ollama": {"name": "Ollama (local)", "base_url": "http://localhost:11434/v1", "model": "", "env": (),
+               "key_url": "https://ollama.com/library", "local": True},
+    "lmstudio": {"name": "LM Studio (local)", "base_url": "http://localhost:1234/v1", "model": "", "env": (),
+                 "key_url": "https://lmstudio.ai", "local": True},
     "custom": {"name": "Other (OpenAI-compatible)", "base_url": "", "model": "", "env": (),
-               "key_url": ""},
+               "key_url": "", "local": True},
 }
 SECRETS = S.WEBUI_DIR / "secrets.json"
 MAX_OUTPUT = 32000   # Anthropic requires max_tokens; a full annotated transcript is long
@@ -60,8 +66,7 @@ def set_key(provider: str, key: str | None):
     else:
         data["api_keys"].pop(provider, None)
     SECRETS.parent.mkdir(parents=True, exist_ok=True)
-    S._write_json(SECRETS, data)
-    os.chmod(SECRETS, 0o600)
+    S._write_json(SECRETS, data, mode=0o600)
 
 
 def mask(key: str) -> str:
@@ -70,13 +75,40 @@ def mask(key: str) -> str:
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
+NOT_OPENAI = ("The server answered, but not in the OpenAI format: check the host (base URL). "
+              "OpenAI-compatible servers usually end with /v1, e.g. http://localhost:1234/v1")
+
+
+def normalize_base_url(provider: str, url: str) -> str:
+    """Local servers (Ollama, LM Studio, vLLM, llama.cpp) serve the OpenAI API under /v1:
+    "192.168.0.5:1234" or "http://host:1234" means http://host:1234/v1. A given path is kept."""
+    url = (url or "").strip()
+    if not url or not PROVIDERS.get(provider, PROVIDERS["custom"]).get("local"):
+        return url
+    if "://" not in url:
+        url = "http://" + url
+    parts = urlsplit(url)
+    if parts.netloc and parts.path.strip("/") == "":
+        url = url.rstrip("/") + "/v1"
+    return url
+
+
 def config(settings: dict | None = None) -> dict:
     """The effective provider settings: provider, base_url, model, key."""
     s = settings or S.load_settings()
     provider = s.get("api_provider") or "gemini"
     p = PROVIDERS.get(provider, PROVIDERS["custom"])
-    return {"provider": provider, "base_url": (s.get("api_base_url") or "").strip() or p["base_url"],
-            "model": (s.get("api_model") or "").strip() or p["model"], "key": api_key(provider)}
+    base_url = normalize_base_url(provider, s.get("api_base_url") or "") or p["base_url"]
+    key = api_key(provider)
+    if key and not p.get("local") and urlsplit(base_url).hostname != urlsplit(p["base_url"]).hostname:
+        key = ""    # a provider's key goes to that provider only; other hosts: the "custom" provider
+    return {"provider": provider, "base_url": base_url,
+            "model": (s.get("api_model") or "").strip() or p["model"], "key": key}
+
+
+def local_provider(provider: str) -> bool:
+    """Local servers and custom hosts: an API key is optional."""
+    return bool(PROVIDERS.get(provider, PROVIDERS["custom"]).get("local"))
 
 
 def problem(cfg: dict) -> str:
@@ -85,7 +117,7 @@ def problem(cfg: dict) -> str:
         return "Set the API host (base URL)"
     if not cfg["model"]:
         return "Choose a model"
-    if not cfg["key"] and cfg["provider"] != "custom":   # local servers often need no key
+    if not cfg["key"] and not local_provider(cfg["provider"]):   # local servers often need no key
         return f"Add the {PROVIDERS[cfg['provider']]['name']} API key"
     return ""
 
@@ -110,7 +142,7 @@ def public(settings: dict) -> dict:
     for pid, p in PROVIDERS.items():
         k = stored_key(pid)
         out[pid] = {"name": p["name"], "base_url": p["base_url"], "model": p["model"], "key_url": p["key_url"],
-                    "key": mask(k) if k else "", "env_key": bool(env_key(pid))}
+                    "key": mask(k) if k else "", "env_key": bool(env_key(pid)), "local": bool(p.get("local"))}
     return {"providers": out, "provider": settings.get("api_provider") or "gemini",
             "model": settings.get("api_model") or "", "base_url": settings.get("api_base_url") or ""}
 
@@ -133,15 +165,19 @@ def stream(cfg: dict, messages: list[dict], on_delta=None) -> str:
         raise RuntimeError(why)
     parts = []
     resp = client(cfg).chat.completions.create(model=cfg["model"], messages=messages, stream=True, **_kwargs(cfg))
+    answered = False
     for chunk in resp:
-        if not chunk.choices:
+        if not getattr(chunk, "choices", None):
             continue
+        answered = True
         d = chunk.choices[0].delta.content or ""
         if d:
             parts.append(d)
             if on_delta:
                 on_delta(d)
     text = "".join(parts)
+    if not answered:
+        raise RuntimeError(NOT_OPENAI)
     if not text.strip():
         raise RuntimeError("The model returned an empty answer")
     return text
@@ -154,7 +190,7 @@ def test(cfg: dict) -> dict:
     c = client(cfg, timeout=40)
     models = []
     try:
-        models = sorted(m.id.removeprefix("models/") for m in c.models.list())
+        models = sorted(m.id.removeprefix("models/") for m in c.models.list() if getattr(m, "id", None))
     except Exception as e:
         listing_error = explain(e)
     else:
@@ -163,8 +199,10 @@ def test(cfg: dict) -> dict:
         try:
             r = c.chat.completions.create(model=cfg["model"], messages=[{"role": "user", "content": "Reply with: OK"}],
                                           **({"max_tokens": 10} if cfg["provider"] == "anthropic" else {}))
+            if not getattr(r, "choices", None):
+                return {"ok": False, "models": models, "error": NOT_OPENAI, "base_url": cfg["base_url"]}
             reply = (r.choices[0].message.content or "").strip()
-            return {"ok": True, "models": models, "reply": reply[:40]}
+            return {"ok": True, "models": models, "reply": reply[:40], "base_url": cfg["base_url"]}
         except Exception as e:
             return {"ok": False, "models": models, "error": explain(e)}
     if listing_error:
@@ -182,7 +220,7 @@ def explain(e: Exception) -> str:
     if name == "NotFoundError" or " 404" in msg:
         return f"Not found (wrong model name or host): {msg[:200]}"
     if name in ("APIConnectionError", "APITimeoutError"):
-        return "Could not reach the API host (internet connection, or the base URL)"
+        return "Could not reach the API host (internet connection, or the base URL; is the local server running?)"
     if name == "RateLimitError" or " 429" in msg:
         return f"Rate limit or quota exceeded: {msg[:200]}"
     return f"{name}: {msg[:300]}"

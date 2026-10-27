@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -46,6 +47,7 @@ DEFAULT_SETTINGS = {
     "source_app": "",                 # bundle id of the app for app / app+mic
     "frames_l1": True,                # auto frames Level 1 (frames_l1.py, CLIP); off = Level 0 only
     "recorder_python": "",            # empty = same interpreter as server.py
+    "device": "auto",                 # Whisper / speaker model: auto (cuda when available) | cpu | cuda
     "last_project": "",
 }
 
@@ -68,11 +70,26 @@ def _read_json(path: Path, default):
         return dict(default)
 
 
-def _write_json(path: Path, data):
+def _write_json(path: Path, data, mode: int | None = None):
+    """Atomic write. mode (e.g. 0o600 for secrets) is set when the file is created, so the
+    content is never readable by others, not even for a moment."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    if mode is None:
+        tmp.write_text(text, encoding="utf-8")
+    else:
+        tmp.unlink(missing_ok=True)
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "w", encoding="utf-8") as f:
+            f.write(text)
+    for attempt in range(5):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:      # Windows: the target is open in another thread/process for a moment
+            if attempt == 4:
+                raise
+            time.sleep(0.05)
 
 
 # ── Settings ────────────────────────────────────────────────────────────────
@@ -81,8 +98,29 @@ def load_settings() -> dict:
     return _read_json(WEBUI_DIR / "settings.json", DEFAULT_SETTINGS)
 
 
+def _check_setting(key: str, value):
+    """Values come from the browser: keep each one the type of its default, and only
+    accept a Python interpreter as the recorder's (server.py runs it)."""
+    default = DEFAULT_SETTINGS[key]
+    if isinstance(default, bool):
+        return bool(value)
+    if isinstance(default, (int, float)):
+        try:
+            return type(default)(float(value))
+        except (TypeError, ValueError):
+            raise ValueError(f"{key}: expected a number")
+    value = "" if value is None else str(value).strip()
+    if key == "recorder_python" and value:
+        exe = Path(value).expanduser()
+        if not exe.is_file() or not exe.name.lower().startswith("python"):
+            raise ValueError("Python: expected the path of a python executable")
+    if key == "device" and value not in ("auto", "cpu", "cuda"):
+        raise ValueError("device: auto, cpu or cuda")
+    return value
+
+
 def save_settings(data: dict) -> dict:
-    merged = {**load_settings(), **{k: v for k, v in data.items() if k in DEFAULT_SETTINGS}}
+    merged = {**load_settings(), **{k: _check_setting(k, v) for k, v in data.items() if k in DEFAULT_SETTINGS}}
     _write_json(WEBUI_DIR / "settings.json", merged)
     return merged
 
@@ -103,8 +141,11 @@ def load_project_settings(project: str) -> dict:
 
 
 def save_project_settings(project: str, data: dict) -> dict:
-    merged = {**load_project_settings(project),
-              **{k: v for k, v in data.items() if k in DEFAULT_PROJECT_SETTINGS}}
+    data = {k: str(v or "").strip() for k, v in data.items() if k in DEFAULT_PROJECT_SETTINGS}
+    style = data.get("style_reference")
+    if style and Path(style).expanduser().suffix.lower() not in (".html", ".htm"):
+        raise ValueError("Style reference: expected an .html file")   # it is sent to the LLM in full
+    merged = {**load_project_settings(project), **data}
     _write_json(project_dir(project) / "project.json", merged)
     return merged
 

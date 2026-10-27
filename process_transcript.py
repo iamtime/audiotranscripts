@@ -76,22 +76,22 @@ def generate(client, provider: str, model: str, prompt: str) -> str:
         return response.choices[0].message.content.strip()
 
 PROMPT = """\
-Твоя задача — преобразовать СЫРОЙ ТРАНСКРИПТ распознавания речи в чистый, читаемый текст.
+Твоя задача - преобразовать СЫРОЙ ТРАНСКРИПТ распознавания речи в чистый, читаемый текст.
 
 ВАЖНО:
 - Выведи ТОЛЬКО обработанный транскрипт. Ничего больше.
-- НЕ выводи содержимое скриншотов — они даны ТОЛЬКО как справочный материал.
+- НЕ выводи содержимое скриншотов - они даны ТОЛЬКО как справочный материал.
 - Не пропускай ничего из содержания транскрипта!
 - Убери таймстампы и служебные метки (вроде [screenshot: ...])
 - Исправь ошибки распознавания (неправильные слова, склонения, окончания)
-- Особое внимание удели идентификаторам, названиям переменных, функций, файлов, технических терминов — они часто распознаются неправильно. Правильные написания ищи в СПРАВОЧНОМ МАТЕРИАЛЕ ниже.
+- Особое внимание удели идентификаторам, названиям переменных, функций, файлов, технических терминов - они часто распознаются неправильно. Правильные написания ищи в СПРАВОЧНОМ МАТЕРИАЛЕ ниже.
 - Сохрани структуру и порядок изложения
 
 ## СЫРОЙ ТРАНСКРИПТ (это нужно обработать):
 
 {transcript}
 
-## СПРАВОЧНЫЙ МАТЕРИАЛ — текст со скриншотов экрана (НЕ включай в результат, используй ТОЛЬКО для исправления идентификаторов):
+## СПРАВОЧНЫЙ МАТЕРИАЛ - текст со скриншотов экрана (НЕ включай в результат, используй ТОЛЬКО для исправления идентификаторов):
 
 {screenshots}
 """
@@ -105,7 +105,7 @@ Requirements:
 - Style code/identifier mentions with <code> tags (colored, monospace)
 - Use highlight boxes for important deep-dive sections
 - Use lists where appropriate
-- Keep all content — do not skip anything
+- Keep all content - do not skip anything
 
 Here is an example of the desired output style:
 
@@ -188,7 +188,7 @@ Here is the `provideHttpClient` function implementation because it is an entry p
 
         <p>Once this process is complete, the request object is passed to the <code>handle</code> method of the <code>HttpHandler</code>, which is injected directly into the <code>HttpClient</code> constructor.</p>
 
-        <p>We will get back to this place and see how the response is handled later on, but for now, let's follow our request and jump into the <code>HttpHandler</code> implementation. This resolves to the <code>HttpInterceptorHandler</code> class instance. So here it is—and among other things, it injects <code>HttpBackend</code>.</p>
+        <p>We will get back to this place and see how the response is handled later on, but for now, let's follow our request and jump into the <code>HttpHandler</code> implementation. This resolves to the <code>HttpInterceptorHandler</code> class instance. So here it is-and among other things, it injects <code>HttpBackend</code>.</p>
     </div>
 
 </body>
@@ -263,6 +263,8 @@ def collect_files(directory: Path, prefix: str, date_str: str,
 
 
 def main():
+    import native_helpers
+    native_helpers.utf8_stdio()    # Windows pipes: cp1251 can't print → or Cyrillic
     parser = argparse.ArgumentParser(
         description="Process transcripts through Gemini",
         epilog="Examples:\n"
@@ -342,7 +344,7 @@ def main():
     screenshot_text = "\n\n".join(screenshot_parts)
 
     if not transcript_text:
-        date_range = args.date if not args.date_to else f"{args.date} — {args.date_to}"
+        date_range = args.date if not args.date_to else f"{args.date} - {args.date_to}"
         print(f"No transcripts found for {date_range}", file=sys.stderr)
         sys.exit(1)
 

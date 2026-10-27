@@ -11,5 +11,15 @@ scikit-learn>=1.0.0
 # web UI (server.py)
 fastapi>=0.110
 uvicorn[standard]>=0.29
+python-multipart>=0.0.32   # uploads (audio files, external transcripts)
 # engine benchmark (bench_asr.py --ref)
 jiwer>=3.0
+# MP3 export / audio files when ffmpeg isn't on PATH
+imageio-ffmpeg>=0.6.0
+# Windows helpers (screenshot_helper_win.py, audio_helper_win.py)
+mss>=10.2; sys_platform == "win32"
+pillow>=13.0; sys_platform == "win32"
+soundcard>=0.4.6; sys_platform == "win32"
+comtypes>=1.4; sys_platform == "win32"
+pycaw>=20240316; sys_platform == "win32"
+psutil>=5.9; sys_platform == "win32"

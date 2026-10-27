@@ -1,4 +1,4 @@
-/* voice-rec studio — client */
+/* voice-rec studio - client */
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ function fmtClock(ts) {
 }
 function sidLabel(sid) {
   const m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/.exec(sid || '');
-  if (!m) return sid || '—';
+  if (!m) return sid || '-';
   const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + `${m[4]}:${m[5]}`;
 }
@@ -210,7 +210,7 @@ async function loadProjects() {
 
 async function selectProject(name, { keepSession = false } = {}) {
   st.project = name;
-  $('#projectName').textContent = name || '—';
+  $('#projectName').textContent = name || '-';
   if (!keepSession) { st.sid = null; st.session = null; resetFrames(); applyVis(null); }
   loadNotes();
   loadExternal();
@@ -353,7 +353,7 @@ function renderControl() {
           <div class="seg" id="langSeg">${['auto', 'en', 'ru'].map(l => `<button data-v="${l}" class="${(s.lang || 'auto') === l ? 'on' : ''}" ${engineBlocksLang(s.engine, l) ? `disabled title="${ENGINES.gigaam.name} recognizes Russian only"` : ''}>${l === 'auto' ? 'Auto' : l.toUpperCase()}</button>`).join('')}</div></div>
         <div class="opt"><span class="opt-label">Speakers</span>
           <select class="field" id="spkSel">${['auto', 'off', '2', '3', '4', '5', '6', '8'].map(v => `<option value="${v}" ${String(s.speakers || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? 'Detect' : v === 'off' ? 'Off' : v}</option>`).join('')}</select></div>
-        ${kind === 'file' ? '' : `<div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${s.minutes || 180}"> min</div>`}
+        ${kind === 'file' ? '' : `<div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${esc(s.minutes || 180)}"> min</div>`}
         ${pauseControl(s.pause || 1.5)}
         ${kind === 'file' ? '' : `<label class="switch opt"><input type="checkbox" id="audioChk" ${s.save_audio ? 'checked' : ''}><span class="knob"></span>Save audio</label>
         <label class="switch opt" title="Capture the screen every second and keep the frames that show something new"><input type="checkbox" id="autoChk" ${s.auto_frames ? 'checked' : ''}><span class="knob"></span>Auto frames</label>`}
@@ -444,6 +444,9 @@ function sourceControl(s) {
       extra = `<select class="field" id="appSel" title="The app whose audio to transcribe (● = playing sound now)">
         ${list.length ? list.map(x => `<option value="${esc(x.bundle)}" ${x.bundle === s.source_app ? 'selected' : ''}>${x.playing ? '● ' : ''}${esc(x.name)}${x.gone ? ' (not running)' : ''}</option>`).join('') : '<option value="">No apps with audio</option>'}
       </select><button class="ghost-btn small" id="appRefresh" title="Refresh the list of apps">↻</button>`;
+      // Windows without per-app capture: say that every sound will be in the recording.
+      const note = (list.find(x => x.note) || {}).note;
+      if (note) extra += `<span class="state-sub" title="${esc(note)}">⚠ All apps are recorded</span>`;
     }
   } else if (kind === 'file') {
     const files = audioSrc.files || [];
@@ -726,7 +729,7 @@ const simBtn = (kind, key) => `<button class="sim-btn" data-sim="${kind}" data-k
 const tools = (kind, key) => `<span class="row-tools">${simBtn(kind, key)}${eyeBtn(kind, key)}</span>`;
 
 // "Such and similar" for lines: same words after normalising, or (longer lines) mostly the
-// same character trigrams — repeated phrases, recognizer hallucinations, filler like "угу".
+// same character trigrams - repeated phrases, recognizer hallucinations, filler like "угу".
 const normText = t => (t || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 function trigrams(s) { const g = new Set(), x = ` ${s} `; for (let i = 0; i < x.length - 2; i++) g.add(x.slice(i, i + 3)); return g; }
 function textSimilar(a, b, ga) {
@@ -1247,7 +1250,7 @@ function renderBeautify() {
       <span class="s2">v${latest.v} · ${esc(relTime(latest.finished || latest.created))}${latest.turns ? ` · ${latest.turns} turns` : ''}</span></div>`;
   }
   const canRun = !!(st.ai && st.ai.ready);
-  el.innerHTML = `${status}<div class="split"><button class="beautify-btn" id="bRun" title="${canRun ? esc(st.ai.label) : esc((st.ai && st.ai.problem) || 'AI is not set up') + ' — click to set up'}">${ICON.sparkle}Beautify</button><button class="beautify-btn more" id="bMore" title="More options" ${canRun ? '' : 'disabled'}>${ICON.chev}</button></div>`;
+  el.innerHTML = `${status}<div class="split"><button class="beautify-btn" id="bRun" title="${canRun ? esc(st.ai.label) : esc((st.ai && st.ai.problem) || 'AI is not set up') + ' - click to set up'}">${ICON.sparkle}Beautify</button><button class="beautify-btn more" id="bMore" title="More options" ${canRun ? '' : 'disabled'}>${ICON.chev}</button></div>`;
   $('#bRun').onclick = () => canRun ? runBeautify(latest ? 'update' : 'full') : openAiSetup();
   $('#bMore').onclick = e => openBeautifyMenu(e.currentTarget);
   const bs = $('#bStatus'); if (bs) bs.onclick = () => switchTab('beautified');
@@ -1259,10 +1262,10 @@ function openBeautifyMenu(anchor) {
   const finished = !isLive();
   const m = $('#beautifyMenu');
   m.innerHTML = `
-    <button class="mi" data-mode="update" ${latest ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Update with new material</div><div class="mi-sub">Extends v${latest ? latest.v : '—'} with new speech and screenshots · fastest</div></span></button>
+    <button class="mi" data-mode="update" ${latest ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Update with new material</div><div class="mi-sub">Extends v${latest ? latest.v : '-'} with new speech and screenshots · fastest</div></span></button>
     <button class="mi" data-mode="full"><span class="mi-main"><div class="mi-title">Full rebuild</div><div class="mi-sub">Regenerates the whole document from the transcript</div></span></button>
     <button class="mi" data-mode="final" ${finished ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Final version</div><div class="mi-sub">${finished ? 'Definitive document with every speaker identified; also saved to docs/' : 'Available after the recording stops (runs automatically)'}</div></span></button>
-    <button class="mi mi-ai" data-ai="1"><span class="mi-main"><div class="mi-title">AI: ${esc(st.ai ? st.ai.label : '—')}</div><div class="mi-sub">Change the provider (Claude Code, Gemini, OpenAI, …), API key, model</div></span></button>`;
+    <button class="mi mi-ai" data-ai="1"><span class="mi-main"><div class="mi-title">AI: ${esc(st.ai ? st.ai.label : '-')}</div><div class="mi-sub">Change the provider (Claude Code, Gemini, OpenAI, …), API key, model</div></span></button>`;
   m.onclick = e => {
     if (e.target.closest('.mi[data-ai]')) { closeMenus(); openAiSetup(); return; }
     const b = e.target.closest('.mi[data-mode]'); if (!b || b.disabled) return;
@@ -1462,7 +1465,7 @@ function onChatUpdate(ev) {
 function captureText(cfg) {
   if (!cfg || cfg.mode === 'full') return ['Capture', 'Full screen'];
   if (cfg.mode === 'region') { const r = cfg.rect || {}; return ['Area', `${Math.round(r.w)} × ${Math.round(r.h)} at ${Math.round(r.x)}, ${Math.round(r.y)}`]; }
-  return ['Window', cfg.title ? `${cfg.owner} — ${cfg.title}` : cfg.owner];
+  return ['Window', cfg.title ? `${cfg.owner} - ${cfg.title}` : cfg.owner];
 }
 function renderCaptureBtn() {
   const [k, l] = captureText(st.capture && st.capture.config);
@@ -1645,6 +1648,9 @@ async function openSettings() {
       <fieldset class="fset"><legend>Recognizer</legend>
         <div class="frow" ${st.bundledPython ? 'hidden' : ''}><label>Python</label><div style="display:flex;gap:8px"><input class="field" id="setPy" value="${esc(s.recorder_python)}" placeholder="Same as the server"><button class="ghost-btn small" id="checkPy" style="height:30px">Check</button></div>
           <div class="help">The interpreter that has faster-whisper, torch and easyocr installed. <span id="checkRes" class="check-res"></span></div></div>
+        <div class="frow"><label>Device</label><select class="field" id="setDevice" style="width:auto">
+          ${[['auto', 'Auto (GPU when available)'], ['cuda', 'GPU (CUDA)'], ['cpu', 'CPU']].map(([v, l]) => `<option value="${v}" ${(s.device || 'auto') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <div class="help">Where Whisper and the speaker model run. An NVIDIA GPU makes Whisper several times faster; it falls back to the CPU if CUDA doesn't load.</div></div>
         <div class="frow"><label>Auto frames</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setL1" ${s.frames_l1 !== false ? 'checked' : ''}><span class="knob"></span>Smart filter (CLIP): drop webcam faces, merge look-alike frames</label>
           <div class="help">Applies to the next recording. Off = pixel comparison only.</div></div>
       </fieldset>
@@ -1673,7 +1679,7 @@ async function openSettings() {
         st.settings = await api('POST', '/api/settings', {
           beautify_model: $('#setBModel').value, chat_model: $('#setCModel').value,
           auto_final_beautify: $('#setAuto').checked, recorder_python: $('#setPy').value.trim(),
-          frames_l1: $('#setL1').checked,
+          frames_l1: $('#setL1').checked, device: $('#setDevice').value,
         });
         if (st.project) await api('POST', `/api/projects/${encodeURIComponent(st.project)}/settings`, {
           context_dir: $('#setCtx').value.trim(), style_reference: $('#setStyle').value.trim(),
@@ -1693,8 +1699,8 @@ function aiPicker(a) {
   const card = (id, title, sub, disabled) => `<button type="button" class="ai-card ${disabled ? 'off' : ''}" data-id="${id}" ${disabled ? 'disabled' : ''}><b>${esc(title)}</b><span>${sub}</span></button>`;
   const html = `
       <div class="ai-cards">
-        ${card('claude', 'Claude Code', a.claude ? 'Installed · best results: sees screenshots, uses your MCP servers' : 'Not installed on this Mac (<a href="https://claude.com/claude-code" target="_blank">get it</a>)', !a.claude)}
-        ${Object.entries(P).map(([id, p]) => card(id, p.name, p.key ? `Key saved (${esc(p.key)})` : p.env_key ? 'Key from environment' : id === 'custom' ? 'Ollama, LM Studio, vLLM, any OpenAI-style API' : 'Needs an API key', false)).join('')}
+        ${card('claude', 'Claude Code', a.claude ? 'Installed · best results: sees screenshots, uses your MCP servers' : 'Not installed on this computer (<a href="https://claude.com/claude-code" target="_blank">get it</a>)', !a.claude)}
+        ${Object.entries(P).map(([id, p]) => card(id, p.name, p.key ? `Key saved (${esc(p.key)})` : p.env_key ? 'Key from environment' : id === 'custom' ? 'vLLM, llama.cpp, any OpenAI-style API' : p.local ? 'Runs on this computer · no key' : 'Needs an API key', false)).join('')}
       </div>
       <div class="ai-claude"><button type="button" class="ghost-btn small" id="aiClaudeTest">Test Claude Code</button>
         <span id="aiClaudeRes" class="check-res"></span></div>
@@ -1702,7 +1708,7 @@ function aiPicker(a) {
         <div class="frow"><label>API key</label><div><input class="field" id="aiKey" type="password" autocomplete="off">
           <div class="help" id="aiKeyHelp"></div></div></div>
         <div class="frow"><label>Host (base URL)</label><div><input class="field" id="aiBase">
-          <div class="help">OpenAI-compatible endpoint. Leave empty for the provider's default.</div></div></div>
+          <div class="help">OpenAI-compatible endpoint. Leave empty for the provider's default. Local servers: /v1 is added when there is no path.</div></div></div>
         <div class="frow"><label>Model</label><div><div style="display:flex;gap:8px"><input class="field" id="aiModel" list="aiModels"><datalist id="aiModels"></datalist>
           <button type="button" class="ghost-btn small" id="aiTest" style="height:30px;white-space:nowrap">Test</button></div>
           <div class="help"><span id="aiTestRes" class="check-res"></span></div></div></div>
@@ -1718,14 +1724,15 @@ function aiPicker(a) {
       const p = P[sel.provider];
       const same = sel.provider === a.provider;
       $('#aiKey', root).value = '';
-      $('#aiKey', root).placeholder = p.key ? `Saved: ${p.key} — type to replace` : p.env_key ? 'Using the key from the environment' : sel.provider === 'custom' ? 'Optional for local servers' : 'Paste your API key';
-      $('#aiKeyHelp', root).innerHTML = p.key_url ? `Get one at <a href="${p.key_url}" target="_blank">${esc(p.key_url.replace('https://', ''))}</a>. Stored on this Mac only.` : 'Stored on this Mac only.';
+      $('#aiKey', root).placeholder = p.key ? `Saved: ${p.key} - type to replace` : p.env_key ? 'Using the key from the environment' : p.local ? 'Optional for local servers' : 'Paste your API key';
+      $('#aiKeyHelp', root).innerHTML = p.key_url ? `Get one at <a href="${p.key_url}" target="_blank">${esc(p.key_url.replace('https://', ''))}</a>. Stored on this computer only.` : 'Stored on this computer only.';
       $('#aiBase', root).value = same ? a.base_url : '';
       $('#aiBase', root).placeholder = p.base_url || 'http://localhost:11434/v1';
       $('#aiModel', root).value = same ? a.model : '';
       $('#aiModel', root).placeholder = p.model || 'model name';
       $('#aiModels', root).innerHTML = '';
       $('#aiTestRes', root).textContent = '';
+      if (p.local && p.base_url && !same) $('#aiTest', root).click();   // list the installed models
     };
     const form = () => ({ engine: sel.engine, provider: sel.provider, api_key: $('#aiKey', root).value.trim(),
       base_url: $('#aiBase', root).value.trim(), model: $('#aiModel', root).value.trim() });
@@ -1759,9 +1766,9 @@ function aiPicker(a) {
       const f = form();
       if (f.engine !== 'api') return '';
       const p = P[f.provider];
-      if (!f.api_key && !p.key && !p.env_key && f.provider !== 'custom') { $('#aiKey', root).focus(); return 'Enter the API key'; }
-      if (f.provider === 'custom' && !f.base_url) { $('#aiBase', root).focus(); return 'Enter the host (base URL)'; }
-      if (f.provider === 'custom' && !f.model) { $('#aiModel', root).focus(); return 'Enter the model name'; }
+      if (!f.api_key && !p.key && !p.env_key && !p.local) { $('#aiKey', root).focus(); return 'Enter the API key'; }
+      if (!f.base_url && !p.base_url) { $('#aiBase', root).focus(); return 'Enter the host (base URL)'; }
+      if (!f.model && !p.model) { $('#aiModel', root).focus(); return 'Enter the model name (Test lists the available ones)'; }
       return '';
     };
     show();
@@ -1866,7 +1873,7 @@ function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   ws.onopen = () => { wsRetry = 0; $('#connDot').className = 'conn-dot on'; };
   ws.onclose = () => {
-    $('#connDot').className = 'conn-dot off'; $('#lastLog').textContent = 'Disconnected from server — retrying…';
+    $('#connDot').className = 'conn-dot off'; $('#lastLog').textContent = 'Disconnected from server - retrying…';
     setTimeout(connect, Math.min(5000, 500 * 2 ** wsRetry++));
   };
   ws.onmessage = e => handle(JSON.parse(e.data));
@@ -1969,7 +1976,7 @@ async function handle(m) {
   }
 }
 
-// ── Notes (projects/<p>/notes.md — single source for context + corrections) ─
+// ── Notes (projects/<p>/notes.md - single source for context + corrections) ─
 const notesUrl = () => `/api/projects/${encodeURIComponent(st.project)}/notes`;
 let notesTimer = null;
 
@@ -2024,7 +2031,7 @@ window.addEventListener('beforeunload', () => {
   if (st.notes.dirty && st.project) navigator.sendBeacon && fetch(notesUrl(), { method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: $('#notesArea').value, client: CLIENT_ID }) });
 });
 
-// ── External transcripts (projects/<p>/external/ — e.g. Teams, for speaker names) ─
+// ── External transcripts (projects/<p>/external/ - e.g. Teams, for speaker names) ─
 const extUrl = () => `/api/projects/${encodeURIComponent(st.project)}/external`;
 
 async function loadExternal() {
@@ -2219,7 +2226,8 @@ $('#docFrame').addEventListener('load', () => {
     st.settings = s.settings; st.recorder = s.recorder; st.claude = s.claude; st.models = s.models;
     st.ai = s.ai; st.bundledPython = s.bundled_python;
     if (s.recorder.pipeline) st.pipeline = s.recorder.pipeline;
-    if (!s.helper) toast('screenshot_helper binary is missing — run ./compile.sh', 'error', 8000);
+    if (!s.helper) toast(s.platform === 'win32' ? 'Screenshots are off - pip install mss pillow'
+      : 'screenshot_helper binary is missing - run ./compile.sh', 'error', 8000);
     await loadProjects();
     if (st.project) await selectProject(st.project);
     else renderAll();
