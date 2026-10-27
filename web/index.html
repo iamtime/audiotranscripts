@@ -103,7 +103,7 @@
           <div class="ext-list" id="extList"></div>
         </div>
         <textarea class="notes-area" id="notesArea" spellcheck="true" placeholder="e.g.&#10;We are the ... team. Client: ... &#10;Speaker at 11:06 is .....&#10;Don't call the system “XXXXX” — it's XXXXXY.&#10;&#10;## Corrections (speech-to-text: heard → meant)&#10;- &quot;hybrids&quot; → &quot;Hybris&quot;&#10;&#10;## Who said it (quote &lt;-- who said it)&#10;- &quot;Let's come back to pricing later&quot; &lt;-- Jane Doe"></textarea>
-        <div class="notes-foot"><span class="mono" id="notesPath"></span></div>
+        <div class="notes-foot"><span class="mono" id="notesPath" data-no-i18n></span></div>
       </div>
     </aside>
   </main>
@@ -118,7 +118,7 @@
 <!-- Console drawer -->
 <div class="console hidden" id="console">
   <div class="console-head"><span>Recognizer console</span><button class="ghost-btn small" id="consoleClose">Close</button></div>
-  <pre id="consoleLog"></pre>
+  <pre id="consoleLog" data-no-i18n></pre>
 </div>
 
 <!-- Menus / popovers -->
@@ -133,6 +133,7 @@
 <div class="lightbox hidden" id="lightbox"></div>
 <div class="toasts" id="toasts"></div>
 
+<script src="/static/i18n.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
