@@ -26,8 +26,17 @@ $venv = (Resolve-Path .venv\Scripts\python.exe).Path
 Run $venv @('-m', 'pip', 'install', '--upgrade', 'pip')
 
 $gpu = (-not $Cpu) -and [bool](Get-Command nvidia-smi -ErrorAction SilentlyContinue)
-$index = if ($gpu) { 'https://download.pytorch.org/whl/cu128' } else { 'https://download.pytorch.org/whl/cpu' }
-Write-Host ("Installing PyTorch ({0})" -f $(if ($gpu) { 'CUDA 12.8' } else { 'CPU' }))
+# PyTorch's CUDA build needs a driver for CUDA 13 (the cu128 builds stop at a torch with
+# known CVEs). With an older driver PyTorch runs on the CPU; Whisper still uses the GPU
+# through CTranslate2 and its own CUDA 12 libraries (below).
+$cudaDriver = 0.0
+if ($gpu) {
+    $m = (& nvidia-smi) | Select-String 'CUDA (?:UMD )?Version:\s*([\d.]+)'   # newer drivers: "CUDA UMD Version" | Select-Object -First 1
+    if ($m) { $cudaDriver = [double]$m.Matches[0].Groups[1].Value }
+}
+$torchGpu = $gpu -and $cudaDriver -ge 13.0
+$index = if ($torchGpu) { 'https://download.pytorch.org/whl/cu130' } else { 'https://download.pytorch.org/whl/cpu' }
+Write-Host ("Installing PyTorch ({0})" -f $(if ($torchGpu) { 'CUDA 13.0' } else { 'CPU' }))
 Run $venv @('-m', 'pip', 'install', 'torch', 'torchaudio', 'torchvision', '--index-url', $index)
 
 Write-Host "Installing the dependencies"
