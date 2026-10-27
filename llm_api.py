@@ -75,12 +75,30 @@ def mask(key: str) -> str:
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
+NOT_OPENAI = ("The server answered, but not in the OpenAI format: check the host (base URL). "
+              "OpenAI-compatible servers usually end with /v1, e.g. http://localhost:1234/v1")
+
+
+def normalize_base_url(provider: str, url: str) -> str:
+    """Local servers (Ollama, LM Studio, vLLM, llama.cpp) serve the OpenAI API under /v1:
+    "192.168.0.5:1234" or "http://host:1234" means http://host:1234/v1. A given path is kept."""
+    url = (url or "").strip()
+    if not url or not PROVIDERS.get(provider, PROVIDERS["custom"]).get("local"):
+        return url
+    if "://" not in url:
+        url = "http://" + url
+    parts = urlsplit(url)
+    if parts.netloc and parts.path.strip("/") == "":
+        url = url.rstrip("/") + "/v1"
+    return url
+
+
 def config(settings: dict | None = None) -> dict:
     """The effective provider settings: provider, base_url, model, key."""
     s = settings or S.load_settings()
     provider = s.get("api_provider") or "gemini"
     p = PROVIDERS.get(provider, PROVIDERS["custom"])
-    base_url = (s.get("api_base_url") or "").strip() or p["base_url"]
+    base_url = normalize_base_url(provider, s.get("api_base_url") or "") or p["base_url"]
     key = api_key(provider)
     if key and not p.get("local") and urlsplit(base_url).hostname != urlsplit(p["base_url"]).hostname:
         key = ""    # a provider's key goes to that provider only; other hosts: the "custom" provider
@@ -147,15 +165,19 @@ def stream(cfg: dict, messages: list[dict], on_delta=None) -> str:
         raise RuntimeError(why)
     parts = []
     resp = client(cfg).chat.completions.create(model=cfg["model"], messages=messages, stream=True, **_kwargs(cfg))
+    answered = False
     for chunk in resp:
-        if not chunk.choices:
+        if not getattr(chunk, "choices", None):
             continue
+        answered = True
         d = chunk.choices[0].delta.content or ""
         if d:
             parts.append(d)
             if on_delta:
                 on_delta(d)
     text = "".join(parts)
+    if not answered:
+        raise RuntimeError(NOT_OPENAI)
     if not text.strip():
         raise RuntimeError("The model returned an empty answer")
     return text
@@ -168,7 +190,7 @@ def test(cfg: dict) -> dict:
     c = client(cfg, timeout=40)
     models = []
     try:
-        models = sorted(m.id.removeprefix("models/") for m in c.models.list())
+        models = sorted(m.id.removeprefix("models/") for m in c.models.list() if getattr(m, "id", None))
     except Exception as e:
         listing_error = explain(e)
     else:
@@ -177,8 +199,10 @@ def test(cfg: dict) -> dict:
         try:
             r = c.chat.completions.create(model=cfg["model"], messages=[{"role": "user", "content": "Reply with: OK"}],
                                           **({"max_tokens": 10} if cfg["provider"] == "anthropic" else {}))
+            if not getattr(r, "choices", None):
+                return {"ok": False, "models": models, "error": NOT_OPENAI, "base_url": cfg["base_url"]}
             reply = (r.choices[0].message.content or "").strip()
-            return {"ok": True, "models": models, "reply": reply[:40]}
+            return {"ok": True, "models": models, "reply": reply[:40], "base_url": cfg["base_url"]}
         except Exception as e:
             return {"ok": False, "models": models, "error": explain(e)}
     if listing_error:

@@ -1708,7 +1708,7 @@ function aiPicker(a) {
         <div class="frow"><label>API key</label><div><input class="field" id="aiKey" type="password" autocomplete="off">
           <div class="help" id="aiKeyHelp"></div></div></div>
         <div class="frow"><label>Host (base URL)</label><div><input class="field" id="aiBase">
-          <div class="help">OpenAI-compatible endpoint. Leave empty for the provider's default.</div></div></div>
+          <div class="help">OpenAI-compatible endpoint. Leave empty for the provider's default. Local servers: /v1 is added when there is no path.</div></div></div>
         <div class="frow"><label>Model</label><div><div style="display:flex;gap:8px"><input class="field" id="aiModel" list="aiModels"><datalist id="aiModels"></datalist>
           <button type="button" class="ghost-btn small" id="aiTest" style="height:30px;white-space:nowrap">Test</button></div>
           <div class="help"><span id="aiTestRes" class="check-res"></span></div></div></div>

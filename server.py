@@ -1000,7 +1000,7 @@ async def ai_set(data: dict = Body(...)):
         if provider not in llm_api.PROVIDERS:
             _err(ValueError("Unknown provider"))
         upd.update(api_provider=provider, api_model=(data.get("model") or "").strip(),
-                   api_base_url=(data.get("base_url") or "").strip())
+                   api_base_url=llm_api.normalize_base_url(provider, data.get("base_url") or ""))
         if data.get("api_key"):
             llm_api.set_key(provider, data["api_key"])
         elif data.get("clear_key"):

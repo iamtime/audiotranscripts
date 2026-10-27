@@ -398,7 +398,10 @@
         'Test Claude Code': 'Проверить Claude Code',
         'API key': 'API-ключ',
         'Host (base URL)': 'Хост (base URL)',
-        "OpenAI-compatible endpoint. Leave empty for the provider's default.": 'OpenAI-совместимый адрес. Оставьте пустым, чтобы использовать адрес провайдера по умолчанию.',
+        "OpenAI-compatible endpoint. Leave empty for the provider's default. Local servers: /v1 is added when there is no path.":
+          'OpenAI-совместимый адрес. Оставьте пустым, чтобы использовать адрес провайдера по умолчанию. Для локальных серверов /v1 добавляется сам, если путь не указан.',
+        'The server answered, but not in the OpenAI format: check the host (base URL). OpenAI-compatible servers usually end with /v1, e.g. http://localhost:1234/v1':
+          'Сервер ответил, но не в формате OpenAI: проверьте хост (base URL). Адрес OpenAI-совместимого сервера обычно заканчивается на /v1, например http://localhost:1234/v1',
         'Model': 'Модель',
         'Test': 'Проверить',
         "With an API, Beautify is one pass over the transcript and the screenshots' text (no images, no tools); chat sees the transcript and your notes.":
