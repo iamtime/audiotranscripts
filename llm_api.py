@@ -230,6 +230,9 @@ def explain(e: Exception) -> str:
         return f"Not found (wrong model name or host): {msg[:200]}"
     if name in ("APIConnectionError", "APITimeoutError"):
         return "Could not reach the API host (internet connection, or the base URL; is the local server running?)"
+    if "context length" in low or "context window" in low or "maximum context" in low:
+        return ("The request doesn't fit the model's context (as loaded on the server: LM Studio loads a model on "
+                "demand with its default context length; load it yourself with a larger Context Length)")
     if name == "RateLimitError" or " 429" in msg:
         return f"Rate limit or quota exceeded: {msg[:200]}"
     return f"{name}: {msg[:300]}"

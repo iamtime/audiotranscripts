@@ -424,7 +424,7 @@ function renderControlStrip() {
     ${isFile ? '' : minutesControl(r.minutes || s.minutes || 180)}
     ${r.engine && r.engine !== 'whisper' ? `<span class="chip" title="Speech recognition engine">${esc(ENGINES[r.engine]?.short || r.engine)}</span>` : ''}
     ${r.lang ? `<span class="chip" title="Detected language">${esc(r.lang.toUpperCase())}</span>` : ''}
-    ${r.diarization ? '<span class="chip" title="Speaker diarization runs after the session">SPEAKERS</span>' : ''}
+    ${r.diarization ? '<span class="chip" title="Speakers are numbered live and refined after the session">SPEAKERS</span>' : ''}
     ${sourceChip(r)}
     <div class="spacer"></div>
     ${!mine ? `<span class="state-sub">Recording in <b>${esc(r.project)}</b></span>` : ''}

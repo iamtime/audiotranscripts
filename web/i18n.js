@@ -142,7 +142,7 @@
         'REC': 'ЗАПИСЬ',
         'Speech recognition engine': 'Движок распознавания речи',
         'Detected language': 'Определённый язык',
-        'Speaker diarization runs after the session': 'Разделение по спикерам выполняется после сессии',
+        'Speakers are numbered live and refined after the session': 'Спикеры нумеруются сразу и уточняются после сессии',
         'SPEAKERS': 'СПИКЕРЫ',
         'Recording in': 'Запись идёт в',
         'Stop automatic frames': 'Остановить автокадры',
@@ -570,6 +570,7 @@
         'Set the API host (base URL)': 'Укажите хост API (base URL)',
         'Choose a model': 'Выберите модель',
         'The API key was rejected': 'API-ключ отклонён',
+        "The request doesn't fit the model's context (as loaded on the server: LM Studio loads a model on demand with its default context length; load it yourself with a larger Context Length)": 'Запрос не помещается в контекст модели (так, как она загружена на сервере: LM Studio, загружая модель по запросу, берёт контекст по умолчанию; загрузите её сами с большим Context Length)',
         'Could not reach the API host (internet connection, or the base URL; is the local server running?)': 'Не удалось связаться с хостом API (интернет или base URL; запущен ли локальный сервер?)',
         'The model returned an empty answer': 'Модель вернула пустой ответ',
         // claude_cli.py / beautify.py step labels
