@@ -165,7 +165,10 @@ def frames_payload(project: str, sid: str) -> dict:
     out = []
     for sc in scenes:
         r = scores.get(sc["id"])
+        shown = sc.get("last_path") or sc["path"]
         out.append({**sc, "url": S.file_url(sc["path"]), "hidden": (sc.get("same_as") or sc["id"]) in hidden,
+                    "ocr_ready": any(Path(p).with_suffix(".txt").exists() for p in (shown, sc["path"])),
+                    "described": Path(shown).with_suffix(".desc.md").exists(),
                     "last_url": S.file_url(sc["last_path"]) if sc.get("last_path") else None,
                     "score": r["score"] if r else None, "selected": bool(r and r["selected"]),
                     "features": r["features"] if r else None, "deixis": r["deixis"] if r else []})
