@@ -1065,6 +1065,53 @@ function eyeBtn(kind, key) {
   return `<button class="eye-btn" data-eye="${kind}" data-key="${esc(key)}" title="${esc(EYE_TITLE[kind][h ? 1 : 0])}">${h ? ICON.eyeOff : ICON.eye}</button>`;
 }
 const visAttr = (kind, key) => `data-vis="${kind}:${esc(key)}"`;
+
+// ── Describe: a vision model writes what an image shows (replaces its OCR text in Beautify) ──
+const DESC_TITLE = ['Describe: a vision model writes what is on this image; Beautify uses it instead of the OCR text',
+  'Described · click to describe again'];
+function descBtn(path, described) {
+  if (!path) return '';
+  return `<button class="desc-btn${described ? ' on' : ''}" data-desc="${esc(path)}" title="${esc(DESC_TITLE[described ? 1 : 0])}">${ICON.sparkle}</button>`;
+}
+const textUrl = (url, ext) => url ? url.replace(/\.(png|jpe?g|webp)$/i, ext) + `?t=${Date.now()}` : null;
+async function fetchText(url) {
+  if (!url) return '';
+  try { const r = await fetch(url); return r.ok ? (await r.text()).trim() : ''; } catch (_) { return ''; }
+}
+// What the lightbox shows under an image: its description and its OCR text.
+async function imageTextsHtml(url, extra = '') {
+  const [desc, ocr] = await Promise.all([fetchText(textUrl(url, '.desc.md')), fetchText(textUrl(url, '.txt'))]);
+  return [extra, desc ? 'Description:\n' + desc : '', ocr ? 'OCR:\n' + ocr : 'OCR is not ready yet.'].filter(Boolean).join('\n\n');
+}
+const describing = new Set();
+async function describeImage(path) {
+  if (!st.project || !st.sid || describing.has(path)) return;
+  describing.add(path);
+  const btns = () => $$(`.desc-btn[data-desc="${CSS.escape(path)}"]`);
+  btns().forEach(b => b.classList.add('busy'));
+  try {
+    await api('POST', sessUrl() + '/describe', { path });
+    markDescribed(path);
+    toast('Described · Beautify will use it instead of the OCR text', 'ok');
+  } catch (e) { fail(e); }
+  describing.delete(path);
+  btns().forEach(b => b.classList.remove('busy'));
+}
+function markDescribed(path) {
+  const shot = st.session && (st.session.screenshots || []).find(s => s.path === path);
+  if (shot && !shot.described) upsertShot({ ...shot, described: true }, false);
+  const sc = st.frames.scenes.find(s => (s.last_path || s.path) === path);
+  if (sc && !sc.described) upsertFrame({ id: sc.id, described: true });
+  $$(`.desc-btn[data-desc="${CSS.escape(path)}"]`).forEach(b => { b.classList.add('on'); b.title = DESC_TITLE[1]; });
+  const lb = $('#lightbox');
+  if (!lb.classList.contains('hidden') && lb.dataset.path === path && lb.refreshTexts) lb.refreshTexts();
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('.desc-btn');
+  if (!b) return;
+  e.stopPropagation(); e.preventDefault();
+  describeImage(b.dataset.desc);
+}, true);
 const hidCls = (kind, key) => (isHidden(kind, key) ? ' is-hidden' : '');
 
 function refreshVisDom() {
@@ -1224,6 +1271,7 @@ function shotStages(s) {
     ['Captured', 'done'],
     ['Transcript', s.logged ? 'done' : 'active'],
     ['OCR', s.ocr_error ? 'err' : s.ocr ? 'done' : 'active'],
+    ...(s.described ? [['Described', 'done']] : []),
     [s.beautified ? `Beautified v${s.beautified}` : 'Beautified',
       s.beautified ? 'done' : inJob ? 'active' : ''],
   ];
@@ -1231,7 +1279,7 @@ function shotStages(s) {
 function shotCardHtml(s, enter) {
   const url = s.url ? `${s.url}` : '';
   return `<div class="shot-card${enter ? ' enter' : ''}${hidCls('shot', s.name)}" data-path="${esc(s.path)}" data-time="${esc(s.time)}" ${visAttr('shot', s.name)}>
-    <div class="card-tools">${simBtn('shot', s.name)}${eyeBtn('shot', s.name)}<button class="shot-del" data-del="${esc(s.path)}" title="Delete screenshot">${ICON.trash}</button></div>
+    <div class="card-tools">${descBtn(s.path, s.described)}${simBtn('shot', s.name)}${eyeBtn('shot', s.name)}<button class="shot-del" data-del="${esc(s.path)}" title="Delete screenshot">${ICON.trash}</button></div>
     <div class="thumb" data-path="${esc(s.path)}">${url ? `<img src="${esc(url)}" loading="lazy" alt="">` : ''}</div>
     <div class="shot-meta"><div class="top"><span class="time">${esc(s.time)}</span><span class="name">${esc(s.name)}</span></div>
     <ol class="pipeline">${shotStages(s).map(([l, c]) => `<li class="${c}" title="${esc(l)}">${esc(l)}</li>`).join('')}</ol></div></div>`;
@@ -1311,9 +1359,12 @@ async function openLightbox(path) {
   const lb = $('#lightbox');
   lb.innerHTML = `<div class="lb-img">${shot.url ? `<img src="${esc(shot.url)}" alt="">` : ''}</div>
     <div class="lb-side"><div class="lb-head"><div><b>${esc(shot.time)}</b> <span style="color:#6b7480;font-size:12px">${esc(shot.name)}</span></div>
-    <div style="display:flex;gap:6px"><button class="ghost-btn small" id="lbDel" title="Delete screenshot">${ICON.trash}</button><button class="ghost-btn small" id="lbJump">Find in transcript</button><button class="ghost-btn small" id="lbClose">Close</button></div></div>
+    <div style="display:flex;gap:6px"><button class="ghost-btn small" id="lbDel" title="Delete screenshot">${ICON.trash}</button><button class="ghost-btn small lb-desc" id="lbDesc">${ICON.sparkle}Describe</button><button class="ghost-btn small" id="lbJump">Find in transcript</button><button class="ghost-btn small" id="lbClose">Close</button></div></div>
     <div class="lb-ocr" id="lbOcr">Loading OCR text…</div></div>`;
   lb.classList.remove('hidden');
+  lb.dataset.path = path;
+  lb.refreshTexts = async () => { if (shot.url) $('#lbOcr').textContent = await imageTextsHtml(shot.url); };
+  lightboxDescribe(path);
   $('#lbClose').onclick = closeLightbox;
   $('#lbJump').onclick = () => { closeLightbox(); jumpToTime(shot.time); };
   $('#lbDel').onclick = () => {
@@ -1322,12 +1373,14 @@ async function openLightbox(path) {
     b.dataset.armed = '1'; b.textContent = 'Click again to delete'; b.style.color = '#ff6b78';
   };
   lb.onclick = e => { if (e.target === lb || e.target.classList.contains('lb-img')) closeLightbox(); };
-  if (shot.url) {
-    try {
-      const r = await fetch(shot.url.replace(/\.png$/, '.txt'));
-      $('#lbOcr').textContent = r.ok ? ((await r.text()).trim() || '(no text recognized)') : 'OCR is not ready yet.';
-    } catch (_) { $('#lbOcr').textContent = 'OCR is not available.'; }
-  }
+  lb.refreshTexts();
+}
+// The lightbox's Describe button: busy while the model works, then the texts are reloaded.
+function lightboxDescribe(path) {
+  const b = $('#lbDesc'); if (!b) return;
+  const sync = () => { b.disabled = describing.has(path); b.lastChild.textContent = describing.has(path) ? 'Describing…' : 'Describe'; };
+  sync();
+  b.onclick = async () => { const p = describeImage(path); sync(); await p; sync(); };
 }
 function closeLightbox() { $('#lightbox').classList.add('hidden'); }
 
@@ -1358,6 +1411,7 @@ async function loadFrames() {
 function upsertFrame(scene) {
   const list = st.frames.scenes;
   const i = list.findIndex(s => s.id === scene.id);
+  if (i < 0 && !scene.path) return;     // an update (OCR done…) of a frame this page doesn't have
   if (i >= 0) list[i] = { ...list[i], ...scene }; else list.push(scene);
   renderFrames();
   syncFrameRow(scene.same_as || scene.id, i < 0 && !scene.same_as);
@@ -1433,10 +1487,12 @@ function frameCardHtml(g) {
   if (g.shows > 1) tags.push(`<span class="ftag" title="Shown ${g.shows} times">×${g.shows}</span>`);
   if (s.last_path) tags.push('<span class="ftag" title="Changed while on screen; the card shows the last state">updated</span>');
   if (s.scroll_of) tags.push(`<span class="ftag" title="Looks like a scrolled #${s.scroll_of}">scroll</span>`);
+  if (s.described) tags.push('<span class="ftag" title="Described by the vision model: Beautify uses it instead of the OCR text">described</span>');
+  else if (s.ocr_ready) tags.push('<span class="ftag" title="The text on it is recognized (OCR)">OCR</span>');
   if (s.cls) tags.push(`<span class="ftag" title="Level 1 (CLIP) guess, ${Math.round((s.cls_score || 0) * 100)}%">${esc(s.cls)}</span>`);
   if (s.features && s.features.deixis) tags.push(`<span class="ftag hot" title="${esc((s.deixis || []).join(' · '))}">“${s.features.deixis} pointer${s.features.deixis > 1 ? 's' : ''}”</span>`);
   return `<div class="frame-card${s.selected ? ' picked' : ''}${hidCls('frame', s.id)}" data-id="${s.id}" ${visAttr('frame', s.id)} title="Show in the transcript">
-    <div class="card-tools">${simBtn('frame', s.id)}${eyeBtn('frame', s.id)}</div>
+    <div class="card-tools">${descBtn(s.last_path || s.path, s.described)}${simBtn('frame', s.id)}${eyeBtn('frame', s.id)}</div>
     <div class="thumb" data-fid="${s.id}" title="Open">${url ? `<img src="${esc(url)}" loading="lazy" alt="">` : ''}${s.selected ? '<span class="pick-star" title="Picked">★</span>' : ''}</div>
     <div class="shot-meta"><div class="top"><span class="time">${esc(hms(s.wall_start))}</span><span class="name">#${s.id} · ${fmtSceneDur(g.duration)}${s.score != null ? ` · score ${s.score.toFixed(1)}` : ''}</span></div>
     <div class="ftags">${tags.join('')}</div></div></div>`;
@@ -1480,14 +1536,19 @@ function openFrameLightbox(id) {
     s.changed != null ? `${Math.round(s.changed * 100)}% different from the previous scene` : '',
     s.mask_frac ? `${Math.round(s.mask_frac * 100)}% masked as moving (webcam)` : '',
     f ? `${f.words} words spoken · ${f.deixis} pointing phrase${f.deixis === 1 ? '' : 's'}${s.deixis && s.deixis.length ? ': ' + s.deixis.join(' · ') : ''}` : '',
-    s.caption || '', s.ocr ? 'OCR:\n' + s.ocr : '',
+    s.caption || '',
   ].filter(Boolean).join('\n');
   const urls = [s.url, s.last_url].filter(Boolean);
   lb.innerHTML = `<div class="lb-img${urls.length > 1 ? ' two' : ''}">${urls.map(u => `<img src="${esc(u)}" alt="">`).join('')}</div>
     <div class="lb-side"><div class="lb-head"><div><b>${esc(hms(s.wall_start))}</b> <span style="color:#6b7480;font-size:12px">frame #${s.id}${s.last_url ? ' · first and last state' : ''}</span></div>
-    <div style="display:flex;gap:6px"><button class="ghost-btn small" id="lbJump">Find in transcript</button><button class="ghost-btn small" id="lbClose">Close</button></div></div>
-    <div class="lb-ocr">${esc(info)}</div></div>`;
+    <div style="display:flex;gap:6px"><button class="ghost-btn small lb-desc" id="lbDesc">${ICON.sparkle}Describe</button><button class="ghost-btn small" id="lbJump">Find in transcript</button><button class="ghost-btn small" id="lbClose">Close</button></div></div>
+    <div class="lb-ocr" id="lbOcr">${esc(info)}</div></div>`;
   lb.classList.remove('hidden');
+  const shown = s.last_path || s.path;
+  lb.dataset.path = shown;
+  lb.refreshTexts = async () => { $('#lbOcr').textContent = await imageTextsHtml(s.last_url || s.url, info); };
+  lb.refreshTexts();
+  lightboxDescribe(shown);
   $('#lbClose').onclick = closeLightbox;
   $('#lbJump').onclick = () => { closeLightbox(); jumpToTime(hms(s.wall_start)); };
   lb.onclick = e => { if (e.target === lb || e.target.classList.contains('lb-img')) closeLightbox(); };
@@ -1916,6 +1977,8 @@ async function openSettings() {
   const s = st.settings;
   let aiInfo = null;
   try { aiInfo = await api('GET', '/api/ai'); } catch (_) { /* old server: no AI choice */ }
+  let vis = null;
+  try { vis = await api('GET', '/api/ai/vision'); } catch (_) { /* old server */ }
   const picker = aiInfo && aiPicker(aiInfo);
   const modelOpts = (cur) => ['opus', 'sonnet', 'haiku'].map(m => `<option value="${m}" ${cur === m ? 'selected' : ''}>${m[0].toUpperCase() + m.slice(1)}</option>`).join('')
     + (cur && !['opus', 'sonnet', 'haiku'].includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : '');
@@ -1930,6 +1993,13 @@ async function openSettings() {
         </div>
         <div class="frow"><label>Final version</label><label class="switch" style="padding-top:5px"><input type="checkbox" id="setAuto" ${s.auto_final_beautify ? 'checked' : ''}><span class="knob"></span>Offer to build the final version when recording stops</label></div>
       </fieldset>
+      ${vis ? `<fieldset class="fset"><legend>Screen descriptions</legend>
+        <div class="frow"><label>Vision model</label><div><div style="display:flex;gap:8px">
+          <select class="field" id="visProv" style="width:auto"><option value="">Auto</option>${Object.entries(vis.providers).map(([id, p]) => `<option value="${id}" ${vis.provider === id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+          <input class="field" id="visModel" value="${esc(vis.model)}"></div>
+          <div class="help" id="visHelp"></div></div></div>
+        <div class="frow" id="visKeyRow"><label>API key</label><input class="field" id="visKey" type="password" autocomplete="off"></div>
+      </fieldset>` : ''}
       ${st.project ? `<fieldset class="fset"><legend>Project · ${esc(st.project)}</legend>
         <div class="frow"><label>Knowledge folder</label><input class="field" id="setCtx" value="${esc(ps.context_dir)}" placeholder="/Users/you/Documents/CLIENT">
           <div class="help">Claude Code runs in this folder, so the MCP servers configured there (e.g. <b>claude-context</b>) power the NEW / CONFIRMS / UPDATES callouts of Update runs.</div></div>
@@ -1956,6 +2026,19 @@ async function openSettings() {
     $$('.ai-card', root).forEach(c => c.addEventListener('click', syncClaude));
     syncClaude();
     const ai0 = ai && JSON.stringify(ai.form());
+    // Describe's vision model: Auto = the Beautify provider if it sees images, else one with a key.
+    const visForm = () => vis && { provider: $('#visProv', root).value, model: $('#visModel', root).value.trim(), api_key: $('#visKey', root).value.trim() };
+    const vis0 = vis && JSON.stringify(visForm());
+    const syncVis = () => {
+      if (!vis) return;
+      const id = $('#visProv', root).value, p = vis.providers[id];
+      $('#visModel', root).placeholder = p ? p.model : (vis.effective.model || 'model');
+      $('#visKeyRow', root).classList.toggle('hidden', !p);
+      $('#visKey', root).placeholder = p && p.key ? `Saved: ${p.key} - type to replace` : p && p.env_key ? 'Using the key from the environment' : 'Paste your API key';
+      $('#visHelp', root).textContent = p ? 'The Describe button next to each screenshot and auto frame sends the image to this model. The same key is used if you pick this provider for Beautify.'
+        : vis.problem ? `Auto: ${vis.problem}` : `Auto: now ${vis.providers[vis.effective.provider] ? vis.providers[vis.effective.provider].name : vis.effective.provider} · ${vis.effective.model}. Describe sends the image to it.`;
+    };
+    if (vis) { $('#visProv', root).onchange = syncVis; syncVis(); }
     const aiChanged = () => !!ai && JSON.stringify(ai.form()) !== ai0;
     $('#checkPy', root).onclick = async () => {
       await api('POST', '/api/settings', { recorder_python: $('#setPy').value.trim() });
@@ -1968,6 +2051,7 @@ async function openSettings() {
       if (why) { toast(why, 'error'); return; }
       try {
         if (aiChanged()) await api('POST', '/api/ai', ai.form());
+        if (vis && JSON.stringify(visForm()) !== vis0) await api('POST', '/api/ai/vision', visForm());
         st.settings = await api('POST', '/api/settings', {
           beautify_model: $('#setBModel').value, chat_model: $('#setCModel').value,
           auto_final_beautify: $('#setAuto').checked, recorder_python: $('#setPy').value.trim(),
@@ -2250,6 +2334,9 @@ async function handle(m) {
       break;
     case 'frame':
       if (m.project === st.project && m.sid === st.sid) upsertFrame(m.scene);
+      break;
+    case 'described':
+      if (m.project === st.project && m.sid === st.sid) markDescribed(m.path);
       break;
     case 'visibility':
       if (m.project === st.project && m.sid === st.sid) { applyVis(m.visibility); refreshVisDom(); }
