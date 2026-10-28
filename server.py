@@ -19,6 +19,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import zipfile
@@ -626,6 +627,8 @@ class BeautifyJobs:
         job = self.jobs.get((project, sid))
         if job and job["status"] == "running":
             job["cancelled"] = True
+            if job["spec"].get("cancel"):
+                job["spec"]["cancel"].set()     # API engine: the request stops at its next piece
         if proc and proc.returncode is None:
             proc.terminate()
 
@@ -638,6 +641,7 @@ class BeautifyJobs:
         log = beautify.RunLog(spec["log"])
         try:
             if spec["settings"]["beautify_engine"] == "api":
+                spec["cancel"] = threading.Event()
                 log.header(spec, "api", llm_api.config(spec["settings"])["model"])
                 self.step(job, f"Writing the document with {llm_api.status(spec['settings'], True)['label']}")
                 loop = asyncio.get_running_loop()

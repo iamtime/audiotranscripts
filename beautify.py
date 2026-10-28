@@ -819,6 +819,12 @@ class RunLog:
 # the frame (head with CSS, header, footer), and the parts are joined into it. Any reply that
 # was cut off at the output limit is continued from where it stopped.
 
+LOOP_CHECK = 4000         # chars between checks that the model isn't going round in circles
+LOOP_TAIL = 400           # a reply whose last this-many chars already came twice before is a loop
+class Stuck(RuntimeError):
+    """The model keeps writing the same text over and over."""
+
+
 CHUNK_CHARS = 25000      # transcript chars per part (~25 min of speech); up to 1.3× that is one part
 MAX_CONTINUE = 4         # continuations of a reply that was cut off
 BODY_MARK = "<!--BODY-->"
@@ -992,9 +998,18 @@ def run_api(spec: dict, on_progress=None, log: RunLog | None = None) -> dict:
     note = [""]
     thought = [0, 0]
     warnings: list[str] = []
+    reply: list[str] = []       # the current reply, for the loop check
+    cancel = spec.get("cancel")  # threading.Event from the server's Cancel
 
     def delta(d):
         total[0] += len(d)
+        reply.append(d)
+        n = sum(map(len, reply))
+        if n // LOOP_CHECK != (n - len(d)) // LOOP_CHECK:
+            so_far = "".join(reply)
+            if so_far.count(so_far[-LOOP_TAIL:]) >= 3:
+                raise Stuck(f"The model got stuck repeating itself ({n:,} characters into the reply); "
+                            "try again, or another model")
         if on_progress:
             on_progress(total[0], note[0])
 
@@ -1017,8 +1032,18 @@ def run_api(spec: dict, on_progress=None, log: RunLog | None = None) -> dict:
             info: dict = {}
             thought[0] = thought[1] = 0
             started, before = time.time(), total[0]
+            reply.clear()
             try:
-                part = llm_api.stream(cfg, messages, delta, reasoning, info=info)
+                part = llm_api.stream(cfg, messages, delta, reasoning, info=info,
+                                      should_stop=cancel.is_set if cancel else None)
+            except llm_api.Cancelled:
+                if log:
+                    log.write(f"{label}: cancelled after {total[0] - before:,} chars")
+                raise
+            except Stuck as e:
+                if log:
+                    log.write(f"{label}: {e}")
+                raise
             except Exception as e:
                 if log:
                     log.write(f"{label}: failed: {llm_api.explain(e)}")
