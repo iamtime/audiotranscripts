@@ -1666,8 +1666,18 @@ function renderDoc() {
     ${sel.prompt_file_url ? `<a class="ghost-btn small" href="${esc(sel.prompt_file_url)}" target="_blank" title="The exact prompt sent for v${sel.v}">Prompt</a>` : ''}
     ${sel.log_url ? `<a class="ghost-btn small" href="${esc(sel.log_url)}" target="_blank" title="What happened during v${sel.v}: every model call and tool call with timings">Log</a>` : ''}
     ${sel.docs_url ? `<a class="ghost-btn small" href="${esc(sel.docs_url)}" target="_blank" title="Copy saved in the project's docs/ folder">${ICON.doc}docs/ copy</a>` : ''}
+    <button class="ghost-btn small" id="docEmbed" title="Save this version as one HTML file with the images embedded (vN-emb.html), to share without the image folders">${ICON.doc}Embed images</button>
     <button class="ghost-btn small" id="docReveal" title="Show this version's HTML file in its folder">${ICON.open}Open</button>`;
   $('#verSel').onchange = e => { st.docVersion = +e.target.value; renderDoc(); };
+  $('#docEmbed').onclick = async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const d = await api('POST', `${sessUrl()}/versions/${sel.v}/embed`);
+      toast(`Saved ${d.name} (${(d.size / 1e6).toFixed(1)} MB)`, 'ok');
+      await api('POST', '/api/reveal', { url: d.url });
+    } catch (err) { fail(err); } finally { btn.disabled = false; }
+  };
   $('#docReveal').onclick = async () => {
     try { await api('POST', '/api/reveal', { url: sel.url }); } catch (e) { fail(e); }
   };

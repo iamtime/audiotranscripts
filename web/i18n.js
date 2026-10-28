@@ -509,6 +509,9 @@
         'Starting recognizer': 'Запуск распознавателя',
         'Starting capture': 'Запуск записи',
         "Show this version's HTML file in its folder": 'Показать HTML-файл этой версии в папке',
+        'Embed images': 'Встроить картинки',
+        'Save this version as one HTML file with the images embedded (vN-emb.html), to share without the image folders':
+          'Сохранить эту версию одним HTML-файлом со встроенными картинками (vN-emb.html), чтобы делиться без папок с картинками',
         'Models loaded': 'Модели загружены',
         'Ready to record': 'Можно начинать запись',
         'Models are loaded · recording starts when you press Start': 'Модели загружены · запись начнётся, когда нажмёте «Начать запись»',
@@ -589,6 +592,7 @@
       patterns: [
         // numbers with units
         [/^(\d+(?:\.\d+)?) s$/, '$1 с'],
+        [/^Saved (v\d+-emb\.html) \((\d+(?:\.\d+)?) MB\)$/, 'Сохранено: $1 ($2 МБ)'],
         [/^(\d+)m (\d+)s$/, '$1 мин $2 с'],
         [/^(\d+)s$/, '$1 с'],
         [/^(\d+) min ago$/, '$1 мин назад'],

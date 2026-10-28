@@ -675,6 +675,17 @@ def _find_image(src: str, base: Path, project: str, sid: str) -> Path | None:
     return next(project_dir(project).glob(f"frames/*/{name}"), None)
 
 
+def embed_version(project: str, sid: str, v: int) -> Path:
+    """sessions/<sid>/vN.html → vN-emb.html next to it, with every image embedded as a data:
+    URI: one file that opens anywhere, to share without the screenshots/ and frames/ folders."""
+    src = session_dir(project, sid) / f"v{int(v)}.html"
+    if not src.is_file():
+        raise FileNotFoundError(f"No v{v} in session {sid}")
+    out = src.with_name(f"v{int(v)}-emb.html")
+    out.write_text(_embed_images(src.read_text(encoding="utf-8"), src.parent, project, sid), encoding="utf-8")
+    return out
+
+
 def _embed_images(html: str, base: Path, project: str, sid: str) -> str:
     def repl(m):
         p = _find_image(m.group(2), base, project, sid)
@@ -1131,12 +1142,18 @@ def main():
     ap.add_argument("sid", help="Session id, e.g. 20260928_110051 (or 'latest')")
     ap.add_argument("--mode", choices=["update", "full", "final"], default="full")
     ap.add_argument("--model", default=None, help="Claude model alias (default from settings: opus)")
+    ap.add_argument("--embed", type=int, metavar="N",
+                    help="Don't beautify: save vN.html as vN-emb.html with the images embedded, to share as one file")
     args = ap.parse_args()
 
     sid = args.sid
     if sid == "latest":
         from sessions import list_sessions
         sid = list_sessions(args.project)[0]["sid"]
+    if args.embed is not None:
+        out = embed_version(args.project, sid, args.embed)
+        print(f"{out}  ({out.stat().st_size / 1e6:.1f} MB)")
+        return
     spec = prepare(args.project, sid, args.mode)
     if args.model:
         spec["settings"]["beautify_model"] = args.model

@@ -1552,6 +1552,16 @@ async def beautify_start(project: str, sid: str, data: dict = Body(default={})):
         _err(e)
 
 
+@app.post("/api/projects/{project}/sessions/{sid}/versions/{v}/embed")
+async def beautify_embed(project: str, sid: str, v: int):
+    """vN.html → vN-emb.html with the images embedded (one file to share)."""
+    try:
+        out = await asyncio.to_thread(beautify.embed_version, S.safe_name(project), S.safe_name(sid), v)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    return {"url": S.file_url(out), "name": out.name, "size": out.stat().st_size}
+
+
 @app.delete("/api/projects/{project}/sessions/{sid}/beautify")
 async def beautify_cancel(project: str, sid: str):
     await jobs.cancel(project, sid)
