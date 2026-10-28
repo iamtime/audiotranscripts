@@ -71,6 +71,44 @@ def _from_vtt(text: str) -> str:
     return "".join(f"[{t}] {s + ': ' if s else ''}{b}\n" for t, s, b in turns)
 
 
+def from_youtube_vtt(text: str, chunk_sec: float = 20.0) -> str:
+    """YouTube subtitles (.vtt) → '[HH:MM:SS] text' lines of about *chunk_sec* each.
+    Auto-generated captions roll: every line is shown again in the next cue (plain, after a
+    version with per-word timing tags), so a line equal to one just emitted is dropped."""
+    out: list[str] = []
+    recent: list[str] = []
+    chunk_t, chunk_sec_at, words = None, 0.0, []
+
+    def secs(ts: str) -> float:
+        h, m, rest = (["0"] + ts.replace(",", ".").split(":"))[-3:]
+        return int(h) * 3600 + int(m) * 60 + float(rest)
+
+    def flush():
+        if words:
+            out.append(f"[{chunk_t}] {' '.join(words)}\n")
+            words.clear()
+
+    t = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if VTT_TIME_RE.match(line):
+            t = line.split("-->")[0].strip()
+            continue
+        if t is None or not line or line.startswith(("Kind:", "Language:")):
+            continue
+        body = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
+        body = re.sub(r"\s+", " ", body)
+        if not body or body in recent:
+            continue
+        recent = (recent + [body])[-3:]
+        if chunk_t is None or secs(t) - chunk_sec_at >= chunk_sec:
+            flush()
+            chunk_t, chunk_sec_at = _hms(t), secs(t)
+        words.append(body)
+    flush()
+    return "".join(out)
+
+
 def _from_docx(data: bytes) -> str:
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         if z.getinfo("word/document.xml").file_size > 10 * MAX_BYTES:    # zip bomb
@@ -103,7 +141,9 @@ def speakers(text: str) -> list[str]:
     return list(names)[:50]
 
 
-def add(project: str, filename: str, data: bytes, sid: str | None) -> dict:
+def add(project: str, filename: str, data: bytes, sid: str | None, text: str | None = None,
+        source: str = "") -> dict:
+    """Store an external transcript; *text* = an already normalized version (else made here)."""
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED:
         raise ValueError(f"Unsupported file type {suffix or '(none)'}: use .vtt, .docx, .txt or .srt")
@@ -111,7 +151,7 @@ def add(project: str, filename: str, data: bytes, sid: str | None) -> dict:
         raise ValueError("The file is empty")
     if len(data) > MAX_BYTES:
         raise ValueError("The file is too large")
-    text = normalize(filename, data)
+    text = normalize(filename, data) if text is None else text
     if not text.strip():
         raise ValueError("No text found in the file")
     d = ext_dir(project)
@@ -126,7 +166,8 @@ def add(project: str, filename: str, data: bytes, sid: str | None) -> dict:
     (d / f"{name}.transcript.txt").write_text(text, encoding="utf-8")
     rec = {"name": name, "original": f"{name}{suffix}", "text": f"{name}.transcript.txt", "sid": sid,
            "uploaded": datetime.now().isoformat(timespec="seconds"),
-           "lines": sum(1 for l in text.splitlines() if l.strip()), "speakers": speakers(text)}
+           "lines": sum(1 for l in text.splitlines() if l.strip()), "speakers": speakers(text),
+           **({"source": source} if source else {})}
     _save_index(project, files + [rec])
     return rec
 

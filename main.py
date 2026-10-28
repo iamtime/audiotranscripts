@@ -21,6 +21,7 @@ import easyocr
 
 from asr_engines import ENGINES, create_engine, engine_label
 import downloads
+import media_file
 import native_helpers
 from events import events
 
@@ -50,6 +51,8 @@ BEAM_SIZE = 5
 PHRASE_GAP_SEC = 0.4       # gap between words to force a phrase split
 EMBED_CHUNK_SEC = 3.0      # max phrase duration before forced split (at word boundary)
 MIN_PHRASE_AUDIO_SEC = 1.0 # min audio duration for reliable speaker embedding
+LINE_SPLIT_SEC = 30.0      # a longer stretch of speech without a pause becomes several transcript lines
+SENTENCE_END_RE = re.compile(r"[.!?…][»\"\')\]]*$")
 
 # ── Globals ──────────────────────────────────────────────────────────────────
 audio_queue: queue.Queue[np.ndarray] = queue.Queue()   # main channel (mic, app or file); None = end of input
@@ -59,14 +62,17 @@ embed_queue: queue.Queue = queue.Queue()            # items: (t_start, t_end, au
 stop_event = threading.Event()
 screenshot_dir: Path | None = None
 ocr_queue: queue.Queue[str] = queue.Queue()
-pending_injections: queue.Queue[str] = queue.Queue()
+pending_injections: queue.Queue = queue.Queue()     # marker, or (t_relative, marker) for a known time
 audio_chunks: list[np.ndarray] = []
 app_chunks: list[np.ndarray] = []     # app channel in app+mic mode (mixed in when saving audio)
 save_audio_flag = False
 mic_muted = threading.Event()   # set via --control-stdin MUTE/UNMUTE
 cut_requests = 0                # bumped by --control-stdin CUT: end the current phrase now
+hotkey_snap = None   # video file: Ctrl+Shift+S grabs a frame of the video instead of the screen
 live_frames = None   # autoframes.LiveFrames once auto frames are switched on (--auto-frames / AUTO ON)
 channel_rms: dict[str, float] = {}    # last level per channel; the meter shows the loudest
+file_pos = 0.0          # file source: seconds of the range fed to the VAD so far
+vad_pos = 0.0           # file source: seconds of the range the VAD has gone through
 
 
 def load_models(engine_name="whisper", asr_model=None):
@@ -176,8 +182,9 @@ def helper_log_reader(proc, prefix):
                 events.emit("error", where=prefix.strip("[]"), message=line.removeprefix("[audio_helper] "))
 
 
-def decode_audio_file(path: Path, work_dir: Path) -> np.ndarray:
-    """Any audio (mp3, m4a, wav, ...) → 16 kHz mono float32, via ffmpeg (afconvert as fallback)."""
+def decode_audio_file(path: Path, work_dir: Path, start: float = 0.0, end: float | None = None) -> np.ndarray:
+    """Any audio or video (mp3, m4a, wav, mp4, mov, ...) → 16 kHz mono float32 of [start, end),
+    via ffmpeg (afconvert as fallback, audio only)."""
     tmp = work_dir / f".decode_{os.getpid()}.raw"
     try:
         try:
@@ -186,7 +193,7 @@ def decode_audio_file(path: Path, work_dir: Path) -> np.ndarray:
                 if not native_helpers.IS_MAC:
                     raise RuntimeError("ffmpeg not found: install it (https://ffmpeg.org) or pip install imageio-ffmpeg")
                 raise FileNotFoundError("ffmpeg")
-            r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", str(path),
+            r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", *media_file.range_args(start, end), "-i", str(path),
                                 "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le", str(tmp)],
                                capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode != 0:
@@ -202,40 +209,140 @@ def decode_audio_file(path: Path, work_dir: Path) -> np.ndarray:
             while pos + 8 <= len(data):
                 cid, size = data[pos:pos + 4], int.from_bytes(data[pos + 4:pos + 8], "little")
                 if cid == b"data":
-                    return np.frombuffer(data[pos + 8:pos + 8 + size], dtype="<f4").copy()
+                    audio = np.frombuffer(data[pos + 8:pos + 8 + size], dtype="<f4")
+                    return audio[int(start * SAMPLE_RATE):None if end is None else int(end * SAMPLE_RATE)].copy()
                 pos += 8 + size + (size & 1)
             raise RuntimeError("afconvert produced no audio data")
     finally:
         tmp.unlink(missing_ok=True)
 
 
-def file_feeder(audio: np.ndarray):
-    """Feed a decoded file into the VAD as fast as the pipeline takes it, then end the input."""
+def file_feeder(audio: np.ndarray, realtime: bool = False, offset: float = 0.0):
+    """Feed a decoded file into the VAD, then end the input. As fast as the pipeline takes it,
+    or (realtime) at playback speed, so a player can run alongside. MUTE holds it (pause).
+    *offset* = where the range starts in the file (progress reports file positions)."""
+    global file_pos
     total = len(audio) / SAMPLE_RATE
+    clock = time.monotonic()        # realtime: when sample 0 is due (moves on after a hold)
+    held = False
+
+    def progress(done, force=False):
+        data = dict(done=round(done, 2), total=round(total, 2), offset=round(offset, 2),
+                    pos=round(offset + done, 2), paused=held)
+        if force:
+            events.emit("source_progress", **data)
+        else:
+            events.emit_throttled("source_progress", 0.25 if realtime else 0.5, "source_progress", **data)
+
     for i in range(0, len(audio), APP_CHUNK):
         if stop_event.is_set():
             break
-        # Stay a little ahead of the VAD, and don't run far ahead of the recognizer either.
-        while (audio_queue.qsize() > 50 or transcribe_queue.qsize() > 3) and not stop_event.is_set():
-            stop_event.wait(0.05)
+        if mic_muted.is_set():
+            held = True
+            progress(i / SAMPLE_RATE, force=True)
+            while mic_muted.is_set() and not stop_event.is_set():
+                stop_event.wait(0.05)
+            held = False
+            clock = time.monotonic() - i / SAMPLE_RATE
+            progress(i / SAMPLE_RATE, force=True)
+            if stop_event.is_set():
+                break
+        if realtime:
+            delay = clock + i / SAMPLE_RATE - time.monotonic()
+            if delay > 0 and stop_event.wait(delay):
+                break
+        else:
+            # Stay a little ahead of the VAD, and don't run far ahead of the recognizer either.
+            while (audio_queue.qsize() > 50 or transcribe_queue.qsize() > 3) and not stop_event.is_set():
+                stop_event.wait(0.05)
         chunk = audio[i:i + APP_CHUNK]
         audio_queue.put(chunk)
+        file_pos = min(total, (i + APP_CHUNK) / SAMPLE_RATE)
         emit_level("file", chunk)
-        events.emit_throttled("source_progress", 0.5, "source_progress",
-                              done=round(min(total, (i + APP_CHUNK) / SAMPLE_RATE), 1), total=round(total, 1))
-    events.emit("source_progress", done=round(total, 1), total=round(total, 1))
+        progress(file_pos)
+    if not stop_event.is_set():
+        file_pos = total
+    progress(file_pos, force=True)
     audio_queue.put(None)
+
+
+def video_frames_worker(path: Path, start: float, end: float | None, interval: float, halt: threading.Event,
+                        begin: float | None = None):
+    """Auto frames for a video file: frames straight from the video (full resolution) every
+    *interval* seconds, paced by the audio (never ahead of what the VAD has been fed), into
+    live_frames. Starts at *begin* (seconds into the range; default: where the audio is now,
+    so AUTO OFF / ON resumes there)."""
+    begin = file_pos if begin is None else begin
+    if live_frames is not None:
+        live_frames.wait_ready()
+    tmp_dir = screenshot_dir / ".frames"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        reader = media_file.FrameReader(path, start + begin, end, interval)
+    except Exception as e:
+        print(f"[frames] {e}", file=sys.stderr)
+        events.emit("error", where="frames", message=str(e))
+        return
+    try:
+        for t, jpeg in reader:
+            t += begin
+            # Pace: the frame's moment must have been reached by the audio; don't flood triage.
+            # After the end / a stop, frames up to where the audio got are still taken.
+            past_end = False
+            while not halt.is_set():
+                if t > file_pos + 0.5:
+                    if stop_event.is_set():
+                        past_end = True
+                        break
+                elif live_frames is None or live_frames.q.qsize() <= 4:
+                    break
+                halt.wait(0.05)
+            if past_end or halt.is_set() or live_frames is None:
+                break
+            out = tmp_dir / f"frame_{t:010.3f}.jpg"
+            out.write_bytes(jpeg)
+            live_frames.put(str(out), t=t)
+        else:       # ran to the end of the range: anything ffmpeg said is worth showing
+            if reader.error:
+                print(f"[frames] ffmpeg: {reader.error}", file=sys.stderr)
+    finally:
+        reader.close()
+
+
+def video_snap(path: Path, start: float, at: float | None = None):
+    """Screenshot of a video file: the frame at *at* (file position; default: where the audio
+    is now), lossless PNG, put into the transcript at that position."""
+    at = start + file_pos if at is None else at
+    # Named by the position in the file (like the transcript's times), not by the clock
+    stamp = datetime.combine(datetime.now().date(), datetime.min.time()) + timedelta(seconds=at)
+    out = screenshot_dir / f"screenshot_{stamp:%Y%m%d_%H%M%S_%f}"[:-3]
+    out = out.with_name(out.name + ".png")
+    try:
+        media_file.grab_frame(path, at, out)
+    except Exception as e:
+        print(f"[snap] {e}", file=sys.stderr)
+        events.emit("error", where="snap", message=str(e))
+        return
+    path_s = str(out.resolve())
+    pending_injections.put((max(0.0, at - start), f"[screenshot: {path_s}]"))
+    ocr_queue.put(path_s)
+    events.emit("screenshot", path=path_s)
 
 
 def flush_pending_injections(output_file, session_data):
     """Write pending injection markers (screenshots, selections) to transcript."""
     while True:
         try:
-            marker = pending_injections.get_nowait()
+            item = pending_injections.get_nowait()
         except queue.Empty:
             break
-        t_rel = (datetime.now() - session_data["start_time"]).total_seconds()
-        wall_time = datetime.now().strftime("%H:%M:%S")
+        if isinstance(item, tuple):     # known position (a frame of a video file)
+            t_rel, marker = item
+            wall_time = (session_data["start_time"] + timedelta(seconds=t_rel)).strftime("%H:%M:%S")
+        else:
+            marker = item
+            t_rel = (datetime.now() - session_data["start_time"]).total_seconds()
+            wall_time = datetime.now().strftime("%H:%M:%S")
         sys.stdout.write(f"\r\033[K[{wall_time}] {marker}\n")
         sys.stdout.flush()
         output_file.write(f"[{wall_time}] {marker}\n")
@@ -370,29 +477,49 @@ def transcription_worker(asr_engine, output_file, session_data, enable_diarizati
             )
             correct = vocab_correct and vocab_path is not None
 
-            # Wall-clock timestamp derived from sample-accurate time
-            wall_time = session_data["start_time"] + timedelta(seconds=seg_t_start)
-            timestamp = wall_time.strftime("%H:%M:%S")
+            def stamp(t_rel: float) -> str:
+                # Wall-clock timestamp derived from sample-accurate time
+                return (session_data["start_time"] + timedelta(seconds=seg_t_start + t_rel)).strftime("%H:%M:%S")
+
+            def end_line():
+                output_file.write("\n")
+                output_file.flush()
+                events.emit("segment", time=stamp(line_t), text=" ".join(line_texts),
+                            t=round(seg_t_start + line_t, 2), duration=round(seg_t_end - line_t, 1),
+                            speaker=label)
+                if enable_diarization and not diarize_this:
+                    session_data["fixed"].append((seg_t_start + line_t, label, " ".join(line_texts)))
 
             first = True
             has_text = False
             asr_words = []
             seg_texts = []
+            line_t = 0.0        # start of the current transcript line, relative to the segment
+            line_texts = []
 
             for seg in segments:
                 text = seg.text.strip()
                 if correct and text:
                     text = apply_corrections(text)
                 if text:
+                    # Minutes of speech without a pause would be one line with one timestamp;
+                    # start a new line at an ASR chunk that begins a sentence, so the text
+                    # keeps its timing (frames and screenshots land next to the right words).
+                    if not first and seg.start - line_t >= LINE_SPLIT_SEC and SENTENCE_END_RE.search(line_texts[-1]):
+                        seg_t_end = seg.start
+                        end_line()
+                        sys.stdout.write("\n")
+                        line_t, line_texts, first = seg.start, [], True
                     if first:
-                        sys.stdout.write(f"\r\033[K[{timestamp}] {tag}")
-                        output_file.write(f"[{timestamp}] {tag}")
+                        sys.stdout.write(f"\r\033[K[{stamp(line_t)}] {tag}")
+                        output_file.write(f"[{stamp(line_t)}] {tag}")
                         first = False
                     sys.stdout.write(text + " ")
                     sys.stdout.flush()
                     output_file.write(text + " ")
                     has_text = True
                     seg_texts.append(text)
+                    line_texts.append(text)
                 if events.enabled:
                     events.emit("transcribe_progress", t=round(seg_t_start, 2),
                                 done=round(min(seg.end, duration), 1), duration=round(duration, 1),
@@ -414,13 +541,8 @@ def transcription_worker(asr_engine, output_file, session_data, enable_diarizati
             if has_text:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
-                output_file.write("\n")
-                output_file.flush()
-                events.emit("segment", time=timestamp, text=" ".join(seg_texts),
-                            t=round(seg_t_start, 2), duration=round(duration, 1), speaker=label)
-
-                if enable_diarization and not diarize_this:
-                    session_data["fixed"].append((seg_t_start, label, " ".join(seg_texts)))
+                seg_t_end = duration
+                end_line()
                 if diarize_this and asr_words:
                     session_data["segments"].append(AsrSegment(
                         t_start=seg_t_start,
@@ -515,6 +637,7 @@ def vad_loop(vad_model, source=audio_queue, label=None):
     """VAD loop over one channel: detect speech segments and enqueue them for transcription.
     label marks the channel's lines in app+mic mode ("Me" / "Them"); None otherwise.
     Runs until stop_event, or until the source yields None (end of an audio file)."""
+    global vad_pos
     vad_chunk_samples = 512  # 32ms at 16kHz
     silence_chunks = int((SILENCE_DURATION_MS / 1000) * SAMPLE_RATE / vad_chunk_samples)
     min_speech_chunks = int((MIN_SPEECH_DURATION_MS / 1000) * SAMPLE_RATE / vad_chunk_samples)
@@ -550,6 +673,8 @@ def vad_loop(vad_model, source=audio_queue, label=None):
             is_speech = speech_prob >= VAD_THRESHOLD
 
             samples_processed += vad_chunk_samples
+            if source is audio_queue:
+                vad_pos = samples_processed / SAMPLE_RATE
 
             if is_speech:
                 if not is_speaking:
@@ -766,6 +891,9 @@ def helper_reader(proc):
                     os.unlink(path)
                 except OSError:
                     pass
+        elif line == "HOTKEY:SNAP":       # --hotkeys-only (video file): main.py takes the picture
+            if hotkey_snap is not None:
+                threading.Thread(target=hotkey_snap, daemon=True).start()
         elif line.startswith("SELECTION:"):
             b64text = line[len("SELECTION:"):]
             try:
@@ -777,7 +905,7 @@ def helper_reader(proc):
 
 
 
-def start_live_frames(frames_dir: Path, session_start: datetime, level1: bool = True):
+def start_live_frames(frames_dir: Path, session_start: datetime, level1: bool = True, keep_all: bool = False):
     from autoframes import LiveFrames   # imported on demand: OpenCV is only needed for auto frames
     def on_scene(scene, kind):
         if kind in ("new", "revisit", "drift"):
@@ -795,7 +923,8 @@ def start_live_frames(frames_dir: Path, session_start: datetime, level1: bool = 
     def on_stats(stats):
         events.emit_throttled("frame_stats", 1.0, "frame_stats", **stats)
 
-    return LiveFrames(frames_dir, session_start, on_scene=on_scene, on_stats=on_stats, level1=level1)
+    return LiveFrames(frames_dir, session_start, on_scene=on_scene, on_stats=on_stats, level1=level1,
+                      drop_stale=not keep_all)
 
 
 def shift_session_times(data, delta):
@@ -902,7 +1031,9 @@ def main():
                         help="Write structured JSON-lines events to this file")
     parser.add_argument("--control-stdin", action="store_true",
                         help="Accept commands on stdin: SNAP, STOP, PAUSE <sec>, MUTE, UNMUTE, CUT "
-                             "(end the current phrase now), AUTO ON/OFF, MINUTES <min> (new auto-stop)")
+                             "(end the current phrase now), AUTO ON/OFF, MINUTES <min> (new auto-stop). "
+                             "With a file source MUTE/UNMUTE pause/resume reading the file, and "
+                             "SNAP [<sec>] takes the video frame at <sec> (default: the current position)")
     parser.add_argument("--wait-go", action="store_true",
                         help="With --control-stdin: load the models, report 'ready' and start capturing "
                              "only after GO on stdin (STOP or end of input quits)")
@@ -935,8 +1066,19 @@ def main():
                         help="What to transcribe: mic (default); app:<bundle-id> - one app's audio, e.g. "
                              "app:com.microsoft.teams2 (macOS 14.2+); app+mic:<bundle-id> - the app and the "
                              "microphone, lines marked [Them] / [Me]; file:<path> - an audio file (mp3, m4a, "
-                             "wav, ...), timestamps are positions in the file. See audio_helper --list. "
+                             "wav, ...) or a video file (mp4, mov, mkv, ...), timestamps are positions in "
+                             "the file. See audio_helper --list. "
                              "On Windows the app is app:system - everything the speakers play")
+    file_opts = parser.add_argument_group("file source (--source file:<path>)")
+    file_opts.add_argument("--start", default=None, metavar="TIME",
+                           help="Start at this position (seconds, MM:SS or HH:MM:SS; default: the beginning)")
+    file_opts.add_argument("--end", default=None, metavar="TIME",
+                           help="Stop at this position (default: the end of the file)")
+    file_opts.add_argument("--realtime", action="store_true",
+                           help="Read the file at playback speed (for watching along: Ctrl+Shift+S takes "
+                                "the video frame on screen) instead of as fast as the recognizer goes")
+    file_opts.add_argument("--play", action="store_true",
+                           help="With --realtime: play the range in an ffplay window alongside")
     args = parser.parse_args()
     source_kind, _, source_arg = args.source.partition(":")
     if source_kind not in ("mic", "app", "app+mic", "file") or (source_kind != "mic" and not source_arg):
@@ -951,6 +1093,32 @@ def main():
     if source_kind == "file" and not Path(source_arg).is_file():
         print(f"Audio file not found: {source_arg}", file=sys.stderr)
         sys.exit(1)
+    try:
+        range_start = media_file.parse_time(args.start) or 0.0
+        range_end = media_file.parse_time(args.end)
+    except ValueError as e:
+        print(f"--start/--end: {e}", file=sys.stderr)
+        sys.exit(1)
+    if source_kind != "file" and (args.start or args.end or args.realtime):
+        print("--start, --end and --realtime need --source file:<path>", file=sys.stderr)
+        sys.exit(1)
+    media = None
+    if source_kind == "file":
+        try:
+            media = media_file.probe(Path(source_arg))
+        except Exception as e:
+            print(f"Could not read {source_arg}: {e}", file=sys.stderr)
+            sys.exit(1)
+        if media.duration is not None:
+            if range_end is not None and range_end > media.duration:
+                range_end = None
+            if range_start >= media.duration:
+                print(f"--start {media_file.fmt_time(range_start)} is past the end of the file "
+                      f"({media_file.fmt_time(media.duration)})", file=sys.stderr)
+                sys.exit(1)
+        if range_end is not None and range_end <= range_start:
+            print("--end must be after --start", file=sys.stderr)
+            sys.exit(1)
     if args.events:
         events.open(args.events)
         downloads.set_reporter(lambda ev: events.emit("download", **ev))
@@ -1055,8 +1223,8 @@ def main():
 
     # Shared session state
     session_data = {
-        # An audio file's timestamps are positions in the file (00:00:00 = its start).
-        "start_time": datetime.combine(datetime.now().date(), datetime.min.time())
+        # A file's timestamps are positions in the file (00:00:00 = its start, also with --start).
+        "start_time": datetime.combine(datetime.now().date(), datetime.min.time()) + timedelta(seconds=range_start)
         if source_kind == "file" else datetime.now(),
         "segments": [],     # list[AsrSegment]  - filled by transcription_worker
         "windows": [],      # list[EmbeddingWindow] - filled by embed_worker
@@ -1066,7 +1234,9 @@ def main():
     events.emit("session", project=args.project, project_dir=str(project_dir.resolve()),
                 transcript_path=str(output_path.resolve()), timestamp=timestamp,
                 start_time=session_data["start_time"].isoformat(),
-                diarization=enable_diarization, continued=prefix_text is not None, source=args.source)
+                diarization=enable_diarization, continued=prefix_text is not None, source=args.source,
+                **({"range_start": range_start, "range_end": range_end, "realtime": args.realtime,
+                    "video": media.video, "duration": media.duration} if media else {}))
 
 
     print(f"Project: {args.project} ({project_dir.resolve()})")
@@ -1116,15 +1286,18 @@ def main():
     app_proc = None
     app_vad_thread = None
     file_audio = None
+    is_video = media is not None and media.video
     if source_kind == "file":
-        print(f"Decoding {source_arg}...")
-        events.emit("status", state="loading", detail="Decoding the audio file")
+        span = "" if not (range_start or range_end) else \
+            f" [{media_file.fmt_time(range_start)} - {media_file.fmt_time(range_end or media.duration or 0)}]"
+        print(f"Decoding {source_arg}{span}...")
+        events.emit("status", state="loading", detail="Decoding the audio")
         try:
-            file_audio = decode_audio_file(Path(source_arg), project_dir)
+            file_audio = decode_audio_file(Path(source_arg), project_dir, range_start, range_end)
         except Exception as e:
             print(f"Could not read the audio file: {e}", file=sys.stderr)
             sys.exit(1)
-        print(f"Audio file: {len(file_audio) / SAMPLE_RATE / 60:.1f} min")
+        print(f"{'Video' if is_video else 'Audio'} file: {len(file_audio) / SAMPLE_RATE / 60:.1f} min{span}")
     if source_kind in ("mic", "app+mic"):
         stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -1145,19 +1318,37 @@ def main():
             app_vad_thread = threading.Thread(target=vad_loop, args=(load_vad(), app_queue, "Them"), daemon=True)
             app_vad_thread.start()
     if file_audio is not None:
-        threading.Thread(target=file_feeder, args=(file_audio,), daemon=True).start()
+        threading.Thread(target=file_feeder, args=(file_audio, args.realtime, range_start), daemon=True).start()
+    player_proc = None
+    if args.play and args.realtime and file_audio is not None:
+        ffplay = Path(native_helpers.ffmpeg_exe() or "ffmpeg").with_name("ffplay")
+        if ffplay.exists():
+            player_proc = subprocess.Popen([str(ffplay), "-loglevel", "error", "-autoexit",
+                                            "-window_title", Path(source_arg).name,
+                                            *media_file.range_args(range_start, range_end), source_arg],
+                                           stdin=subprocess.DEVNULL)
+        else:
+            print("[play] ffplay not found next to ffmpeg; playing nothing", file=sys.stderr)
 
-    # Start native screenshot helper (not for audio files: nothing on screen belongs to them)
+    # Start native screenshot helper. Not for audio files (nothing on screen belongs to them);
+    # for a video watched in real time only its hotkeys: Ctrl+Shift+S takes the video's frame.
+    global hotkey_snap
+    file_path = Path(source_arg) if source_kind == "file" else None
+    if is_video:
+        hotkey_snap = lambda: video_snap(file_path, range_start)
+    want_helper = source_kind != "file" or (is_video and args.realtime)
     screenshot_proc = None
     screenshot_helper = native_helpers.screenshot_cmd()
-    if source_kind != "file" and not screenshot_helper:
+    if want_helper and not screenshot_helper:
         print(f"[screenshots] off: screenshot_helper is missing ({native_helpers.screenshot_build_hint()})",
               file=sys.stderr)
         events.emit("error", where="screenshots", message="Screenshots are off: the screenshot helper is missing")
-    if source_kind != "file" and screenshot_helper:
+    if want_helper and screenshot_helper:
         helper_cmd = [*screenshot_helper, str(screenshot_dir.resolve())]
         if args.capture_config:
             helper_cmd.append(str(Path(args.capture_config).resolve()))
+        if source_kind == "file":
+            helper_cmd.append("--hotkeys-only")
         screenshot_proc = subprocess.Popen(
             helper_cmd,
             stdin=subprocess.PIPE,
@@ -1176,8 +1367,28 @@ def main():
     frames_interval = args.auto_frames or 1.0
     frames_lock = threading.Lock()
 
-    def set_auto_frames(on: bool):
+    video_halt = [None, None]     # the running video_frames_worker's stop event and thread
+
+    def set_auto_frames(on: bool, begin: float | None = None):
         global live_frames
+        if is_video:
+            with frames_lock:
+                if video_halt[0] is not None:
+                    video_halt[0].set()
+                    video_halt[0] = None
+                if on:
+                    if live_frames is None:
+                        live_frames = start_live_frames(frames_dir, session_data["start_time"],
+                                                        level1=not args.no_frames_l1, keep_all=True)
+                    video_halt[0] = threading.Event()
+                    video_halt[1] = threading.Thread(target=video_frames_worker,
+                                                     args=(file_path, range_start, range_end, frames_interval,
+                                                           video_halt[0], begin),
+                                                     daemon=True)
+                    video_halt[1].start()
+            print(f"\r\033[K[frames] auto {'on' if on else 'off'} (from the video)")
+            events.emit("auto_frames", on=on, interval=frames_interval, dir=str(frames_dir.resolve()))
+            return
         if screenshot_proc is None:
             return
         with frames_lock:
@@ -1193,7 +1404,7 @@ def main():
         events.emit("auto_frames", on=on, interval=frames_interval, dir=str(frames_dir.resolve()))
 
     if args.auto_frames > 0:
-        set_auto_frames(True)
+        set_auto_frames(True, begin=0.0)
 
     # Auto-stop: a deadline (not a fixed Timer) so MINUTES can move it while recording
     listen_start = time.monotonic()
@@ -1221,7 +1432,13 @@ def main():
         def control_reader():
             for line in sys.stdin:
                 cmd = line.strip().upper()
-                if cmd == "SNAP":
+                if is_video and (cmd == "SNAP" or cmd.startswith("SNAP ")):
+                    try:
+                        at = float(cmd.split()[1]) if " " in cmd else None
+                    except ValueError:
+                        at = None
+                    threading.Thread(target=video_snap, args=(file_path, range_start, at), daemon=True).start()
+                elif cmd == "SNAP":
                     if screenshot_proc is None:
                         continue
                     try:
@@ -1242,7 +1459,8 @@ def main():
                         mic_muted.set()
                     else:
                         mic_muted.clear()
-                    print(f"\r\033[K[mic] {'muted' if cmd == 'MUTE' else 'live'}")
+                    print(f"\r\033[K[{'file' if source_kind == 'file' else 'mic'}] "
+                          f"{('paused' if source_kind == 'file' else 'muted') if cmd == 'MUTE' else 'live'}")
                     events.emit("muted", muted=cmd == "MUTE")
                 elif cmd == "CUT":
                     global cut_requests
@@ -1260,9 +1478,11 @@ def main():
         threading.Thread(target=control_reader, daemon=True).start()
     what = {"mic": "default microphone", "app": f"app audio of {source_arg}",
             "app+mic": f"app audio of {source_arg} [Them] + default microphone [Me]",
-            "file": f"audio file {Path(source_arg).name}"}[source_kind]
+            "file": f"{'video' if is_video else 'audio'} file {Path(source_arg).name}"}[source_kind]
     if source_kind == "file":
-        print(f"Transcribing {what} (Ctrl+C to stop early)...")
+        print(f"Transcribing {what}{' in real time' if args.realtime else ''} (Ctrl+C to stop early)...")
+        if want_helper and screenshot_proc is not None:
+            print("Ctrl+Shift+S: the video frame at the current position")
     else:
         print(f"Listening on {what} (auto-stop in {args.minutes} min, Ctrl+C to stop early)...")
         print(f"Ctrl+Shift+S: screenshot, Ctrl+Shift+W: selection")
@@ -1274,6 +1494,12 @@ def main():
         stop_event.set()        # the audio file ended, or a stop was requested
         if screenshot_proc is not None:
             screenshot_proc.terminate()
+        if player_proc is not None:
+            player_proc.terminate()
+        if video_halt[0] is not None:
+            # Let it take the frames up to where the audio got (it stops there by itself).
+            video_halt[1].join(timeout=300)
+            video_halt[0].set()
         if app_proc is not None:
             app_proc.terminate()
         if app_vad_thread is not None:
@@ -1354,6 +1580,13 @@ def main():
             )
 
         print(f"Transcript saved to: {output_path}")
+        if source_kind == "file":
+            # Where to pick up after an interrupted run: --start <position>
+            done = vad_pos >= len(file_audio) / SAMPLE_RATE - 0.05
+            pos = range_start + vad_pos
+            print(f"Processed {media_file.fmt_time(range_start)} - {media_file.fmt_time(pos)}"
+                  f"{' (complete)' if done else f' (stopped early; resume with --start {pos:.1f})'}")
+            events.emit("source_done", start=round(range_start, 2), position=round(pos, 2), complete=done)
         events.emit("finished", transcript_path=str(output_path.resolve()))
         events.close()
 

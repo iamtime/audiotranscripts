@@ -29,6 +29,7 @@
         <span class="capture-kind" id="captureKind">Capture</span>
         <span class="capture-label" id="captureLabel">Full screen</span>
       </button>
+      <a class="ghost-btn settings-btn batch-btn" id="batchBtn" href="/batch" target="ushi-batch" title="Batch: a queue of YouTube videos to download, transcribe and beautify"><svg viewBox="0 0 20 20" class="ico"><path d="M4 5h12M4 10h12M4 15h7"/></svg>Batch<span class="tab-badge hidden" id="batchBadge"></span></a>
       <button class="icon-btn" id="themeBtn" title="Toggle theme"><svg viewBox="0 0 20 20" class="ico"><path d="M10 3a7 7 0 1 0 7 7 5.5 5.5 0 0 1-7-7z"/></svg></button>
       <button class="ghost-btn settings-btn" id="settingsBtn" title="Settings: AI provider, project, recognizer"><svg viewBox="0 0 24 24" class="ico"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
     </div>
@@ -36,6 +37,9 @@
 
   <!-- ── Recorder control strip ──────────────────────────── -->
   <section class="control" id="control"></section>
+
+  <!-- ── Audio / video file: range, real-time player ─────── -->
+  <section class="media-panel off" id="mediaPanel"></section>
 
   <!-- ── Workspace ───────────────────────────────────────── -->
   <main class="workspace">

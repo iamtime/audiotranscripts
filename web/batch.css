@@ -1,0 +1,100 @@
+/* ushi - Batch page (uses the tokens and components of style.css) */
+/* style.css locks the main window's page (its panels scroll); this page scrolls as a whole */
+html:has(body.batch-page) { height: auto; }
+body.batch-page { min-height: 100vh; height: auto; overflow: auto; display: flex; flex-direction: column; }
+.batch-page .topbar { position: sticky; top: 0; z-index: 20; }
+.batch-page .brand { text-decoration: none; color: inherit; }
+.b-title { flex: 1; font-weight: 640; font-size: 16px; letter-spacing: -.01em; display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.b-sub { font-size: 12.5px; font-weight: 500; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.b-par { display: flex; align-items: center; gap: 8px; margin-right: 8px; }
+.b-par .field.num { width: 56px; }
+.batch-page a.settings-btn { text-decoration: none; color: inherit; }
+
+.b-main { flex: 1; display: grid; grid-template-columns: 440px minmax(0, 1fr); gap: 16px; padding: 16px; align-items: start; }
+@media (max-width: 980px) { .b-main { grid-template-columns: 1fr; } .b-add { position: static !important; } }
+
+/* ── Add panel ── */
+.b-add { position: sticky; top: 70px; padding: 18px; gap: 12px; overflow: visible; }
+.b-step { display: flex; align-items: center; gap: 10px; }
+.b-step h2 { margin: 0; font-size: 16px; font-weight: 640; letter-spacing: -.01em; }
+.b-num { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 700; }
+.b-help { margin: 0; color: var(--muted); font-size: 12.5px; }
+.b-bad { color: var(--rec); font-weight: 600; }
+.b-note { color: var(--warn); }
+.b-urls { width: 100%; resize: vertical; min-height: 160px; padding: 10px 12px; font: 12.5px/1.6 "SF Mono", ui-monospace, Menlo, monospace; height: auto; }
+.b-foot { display: flex; align-items: center; gap: 10px; }
+.b-add .primary-btn:disabled { opacity: .45; cursor: default; filter: none; }
+
+.b-cfg-head, .b-cfg-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) 54px 54px 30px; align-items: center; gap: 10px; }
+.b-cfg-head { padding: 0 0 6px; border-bottom: 1px solid var(--line); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; }
+.b-cfg-head > span { grid-column: 1 / 3; }
+.b-cfg-head .switch { flex-direction: column; gap: 3px; font-size: 10px; }
+.b-cfg { display: flex; flex-direction: column; max-height: 52vh; overflow: auto; margin: 0 -6px; padding: 0 6px; }
+.b-cfg-row { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.b-cfg-row .b-thumb { width: 64px; height: 36px; }
+.b-cfg-row .switch, .b-cfg-head .switch { justify-self: center; }
+.b-cfg-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.b-proj { width: 100%; height: 30px; }
+.b-proj.bad { border-color: var(--rec); box-shadow: 0 0 0 3px var(--rec-soft); }
+.b-cfg-url { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.b-x { width: 28px; height: 28px; font-size: 13px; }
+
+/* ── Queue ── */
+.b-queue { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.b-queue-head { display: flex; align-items: center; gap: 12px; min-height: 32px; }
+.b-queue-head h2 { margin: 0; font-size: 16px; font-weight: 640; }
+.b-summary { display: flex; gap: 6px; flex-wrap: wrap; }
+.b-sum { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+.b-sum.hold { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.b-sum.done { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.b-sum.download, .b-sum.recognize, .b-sum.beautify { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.b-warn { padding: 10px 14px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+.b-list { display: flex; flex-direction: column; gap: 10px; }
+.b-list .empty { background: var(--panel); border: 1px dashed var(--line-strong); border-radius: 14px; }
+
+.b-task { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px; padding: 14px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+.b-task.hold { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.b-task.done { opacity: .82; }
+.b-thumb { width: 160px; height: 90px; object-fit: cover; border-radius: 9px; background: var(--panel-2); display: block; }
+.b-thumb-link { align-self: start; }
+.b-body { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.b-row1 { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.b-name { flex: 1; min-width: 0; font-weight: 620; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.b-meta { font-size: 12.5px; color: var(--muted); }
+.b-meta a { color: var(--ink); text-decoration: none; }
+.b-meta a:hover { text-decoration: underline; }
+.b-badge { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 6px;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+.b-badge.download, .b-badge.recognize, .b-badge.beautify { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.b-badge.hold { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.b-badge.done { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.b-del { width: 28px; height: 28px; font-size: 13px; flex: none; }
+.b-del.armed { width: auto; padding: 0 10px; color: #fff; background: var(--rec); font-size: 12px; font-weight: 600; }
+
+.b-stages { display: flex; align-items: center; gap: 0; }
+.b-link { width: 18px; height: 2px; background: var(--line-strong); flex: none; }
+.b-stage { position: relative; overflow: hidden; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px 0 9px; border-radius: 8px;
+  font-size: 12.5px; font-weight: 600; color: var(--faint); background: var(--panel-2); border: 1px solid var(--line); white-space: nowrap; }
+.b-stage .ico { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.b-stage > span { position: relative; z-index: 1; }
+.b-stage .spinner { position: relative; z-index: 1; }
+.b-stage i { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .4s; }
+.b-dot { width: 7px; height: 7px; border-radius: 50%; border: 1.6px solid currentColor; }
+.b-stage.running { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.b-stage.waiting { color: var(--ink-2); border-style: dashed; border-color: var(--line-strong); }
+.b-stage.done { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.b-stage.hold { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.b-stage.skipped { text-decoration: line-through; opacity: .7; }
+
+.b-act { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.b-act.mono { font-size: 11.5px; color: var(--ink-2); }
+.b-hold { border-radius: 10px; background: var(--warn-soft); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.b-hold-head { display: flex; align-items: center; gap: 8px; color: var(--warn); font-size: 13px; }
+.b-hold-head .ico { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.b-hold .ghost-btn { background: var(--panel); }
+.b-err { margin: 0; font: 11.5px/1.5 "SF Mono", ui-monospace, Menlo, monospace; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; max-height: 9em; overflow: auto; }
+.b-logbtn { align-self: flex-start; }
+.b-log { margin: 0; max-height: 220px; overflow: auto; padding: 10px 12px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; color: var(--ink-2); }
+@media (max-width: 640px) { .b-task { grid-template-columns: 1fr; } .b-thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; } }

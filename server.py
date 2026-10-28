@@ -30,9 +30,10 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import batch
 import beautify
 import claude_cli
 import downloads
@@ -47,7 +48,9 @@ ENGINES = ("whisper", "gigaam", "parakeet")   # main.py --engine (see asr_engine
 ROOT = S.ROOT
 WEB_DIR = ROOT / "web"
 CAPTURE_CONFIG = S.WEBUI_DIR / "capture.json"
-SOURCES = ("mic", "app+mic", "app", "file")   # main.py --source kinds
+# main.py --source kinds; "video" / "video-rt" are files too (background / --realtime with a player)
+SOURCES = ("mic", "app+mic", "app", "file", "video", "video-rt")
+FILE_SOURCES = ("file", "video", "video-rt")
 CAPTURE_PREVIEW = S.WEBUI_DIR / "capture_preview.png"
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 NOISY_LOG = ("● speech", "[transcribing", "[embedding]")
@@ -132,7 +135,9 @@ class Recorder:
         self.muted = False
         self.auto_frames = False
         self.frame_stats: dict = {}
-        self.source_progress: dict | None = None    # audio file: {"done": sec, "total": sec}
+        self.source_progress: dict | None = None    # file: {"done", "total", "offset", "pos" (in the file), "paused"}
+        self.source_done: dict | None = None        # file: {"start", "position", "complete"} when it ended
+        self.stop_requested = False                 # Stop was pressed (not a crash)
         self.session_start: datetime | None = None
         # speech = seconds of the phrase being recorded (None = silence);
         # current = chunk Whisper is working on; pending = chunks waiting in the queue
@@ -152,6 +157,7 @@ class Recorder:
             "minutes": self.options.get("minutes"),
             "source": self.options.get("source") or "mic", "source_app": self.options.get("source_app") or "",
             "source_name": self.options.get("source_name") or "", "source_progress": self.source_progress,
+            "source_done": self.source_done,
         }
 
     def live_session(self) -> dict:
@@ -209,8 +215,8 @@ class Recorder:
             raise HTTPException(400, "GigaAM recognizes Russian only; pick Auto/RU or another engine")
         if engine != "whisper":
             cmd += ["--engine", engine]
-        if str(opts.get("source") or "mic") != "file":
-            cmd.append("--wait-go")         # an audio file has nobody to wait for
+        if str(opts.get("source") or "mic") not in FILE_SOURCES:
+            cmd.append("--wait-go")         # a file has nobody to wait for
         self.engine = engine
         speakers = str(opts.get("speakers") or "off")
         if speakers != "off":
@@ -232,10 +238,22 @@ class Recorder:
             if not native_helpers.audio_cmd():
                 raise HTTPException(400, f"App audio needs audio_helper ({native_helpers.audio_build_hint()})")
             cmd += ["--source", f"{source}:{app_id}"]
-        elif source == "file":
+        elif source in FILE_SOURCES:
             path = audio_file_path(project, str(opts.get("source_file") or ""))
             cmd += ["--source", f"file:{path}"]
-            opts["continue_sid"] = ""        # a file's timestamps start at 00:00:00: always a new session
+            if not opts.get("batch"):
+                # A file's timestamps start at 00:00:00: a new session (the batch queue continues
+                # its own interrupted session with --start where it stopped).
+                opts["continue_sid"] = ""
+            for k in ("start", "end"):
+                try:
+                    v = float(opts.get(k) or 0)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"Bad {k} position")
+                if v > 0:
+                    cmd += [f"--{k}", f"{v:.2f}"]
+            if source == "video-rt":
+                cmd.append("--realtime")
         continue_sid = (opts.get("continue_sid") or "").strip()
         if continue_sid:
             if not S.transcript_path(project, continue_sid).exists():
@@ -259,10 +277,11 @@ class Recorder:
             *cmd, cwd=str(S.DATA_ROOT), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, **detach,
             env=native_helpers.child_env(), limit=STREAM_LIMIT)
-        S.save_settings({"last_project": project, **{k: opts[k] for k in
-                         ("engine", "lang", "speakers", "minutes", "pause", "save_audio", "auto_frames",
-                          "source", "source_app")
-                         if k in opts}})
+        if not opts.get("batch"):       # the queue's runs don't change the UI's choices
+            S.save_settings({"last_project": project, **{k: opts[k] for k in
+                             ("engine", "lang", "speakers", "minutes", "pause", "save_audio", "auto_frames",
+                              "source", "source_app")
+                             if k in opts}})
         self.set_state("loading", "Starting recognizer")
         loop = asyncio.get_running_loop()
         loop.create_task(self._read_output())
@@ -296,14 +315,16 @@ class Recorder:
     async def stop(self):
         if not self.active:
             return
+        self.stop_requested = True
         self.interrupt()
         if self.state in ("loading", "ready", "listening"):
             self.set_state("stopping", "Stopping")
 
-    async def snap(self):
+    async def snap(self, at: float | None = None):
+        """A screenshot; for a video file the frame at *at* (file position, e.g. the player's)."""
         if not self.active or self.state != "listening":
             raise HTTPException(409, "Not recording")
-        self.proc.stdin.write(b"SNAP\n")
+        self.proc.stdin.write(b"SNAP\n" if at is None else f"SNAP {at:.3f}\n".encode())
         await self.proc.stdin.drain()
 
     async def _read_output(self):
@@ -444,8 +465,11 @@ class Recorder:
         elif t == "segment_empty":
             pass
         elif t == "source_progress":
-            self.source_progress = {"done": ev.get("done", 0), "total": ev.get("total", 0)}
+            self.source_progress = {k: ev.get(k, 0) for k in ("done", "total", "offset", "pos", "paused")}
             hub.emit({"type": "source_progress", **self.source_progress})
+        elif t == "source_done":
+            self.source_done = {k: ev.get(k) for k in ("start", "position", "complete")}
+            self.source_done["file"] = self.options.get("source_file") or ""
         elif t == "minutes":
             self.options["minutes"] = ev.get("minutes")
             hub.emit({"type": "recorder", **self.snapshot()})
@@ -543,7 +567,7 @@ class Recorder:
             hub.emit({"type": "session_changed", "project": project, "sid": sid, "finished": True})
             has_speech = S.transcript_path(project, sid).exists() and any(
                 e["kind"] == "speech" for e in S.parse_transcript(S.read_transcript(project, sid)))
-            if S.load_settings().get("auto_final_beautify") and has_speech:
+            if S.load_settings().get("auto_final_beautify") and has_speech and not self.options.get("batch"):
                 # Ask in the UI instead of starting a long run on its own; "Not now" leaves
                 # the Beautify button as the way to start it later.
                 hub.emit({"type": "offer_beautify", "project": project, "sid": sid})
@@ -576,13 +600,11 @@ class BeautifyJobs:
         live = recorder.active and recorder.project == project and recorder.sid == sid
         if mode == "final" and live:
             mode = "full"
-        if mode == "final" and await asyncio.to_thread(SF.auto_select, project, sid):
-            hub.emit({"type": "visibility", "project": project, "sid": sid,
-                      "visibility": S.load_visibility(project, sid)})
         spec = await asyncio.to_thread(beautify.prepare, project, sid, mode, live)
         job = {"project": project, "sid": sid, "v": spec["v"], "mode": spec["mode"], "status": "running",
                "started": time.time(), "steps": [], "chars": 0, "summary": "", "error": "",
-               "lines": spec["lines"], "t_last": spec["t_last"], "shots": spec["shot_count"], "spec": spec}
+               "lines": spec["lines"], "t_last": spec["t_last"], "shots": spec["shot_count"],
+               "frames": spec["frame_count"], "log_url": S.file_url(spec["log"]), "spec": spec}
         self.jobs[key] = job
         self.step(job, {"update": "Updating the previous version",
                         "full": "Rebuilding the full document",
@@ -611,27 +633,36 @@ class BeautifyJobs:
         spec = job["spec"]
         key = (job["project"], job["sid"])
         result: dict = {}
+        api_info: dict = {}
         stderr_tail = ""
+        log = beautify.RunLog(spec["log"])
         try:
             if spec["settings"]["beautify_engine"] == "api":
+                log.header(spec, "api", llm_api.config(spec["settings"])["model"])
                 self.step(job, f"Writing the document with {llm_api.status(spec['settings'], True)['label']}")
                 loop = asyncio.get_running_loop()
                 last = [0.0]
 
-                def progress(chars: int):
+                def progress(chars: int, note: str = ""):
                     if time.time() - last[0] < 1.5:
                         return
                     last[0] = time.time()
 
                     def show():
-                        job["steps"][-1]["text"] = f"Writing the document · {chars:,} characters"
+                        text = f"{note or 'Writing the document'} · {chars:,} characters"
+                        if job["steps"][-1].get("note") == note:
+                            job["steps"][-1]["text"] = text
+                        else:      # a new part: its own step, so the list shows how the parts went
+                            job["steps"].append({"t": round(time.time() - job["started"], 1), "text": text, "note": note})
                         self.broadcast(job)
                     loop.call_soon_threadsafe(show)
-                await asyncio.to_thread(beautify.run_api, spec, progress)
+                api_info = await asyncio.to_thread(beautify.run_api, spec, progress, log)
                 ok = True
             else:
+                cmd = beautify.claude_command(spec)
+                log.header(spec, "claude", spec["settings"]["beautify_model"], cmd)
                 proc = await asyncio.create_subprocess_exec(
-                    *beautify.claude_command(spec), cwd=str(spec["cwd"]), stdin=asyncio.subprocess.PIPE,
+                    *cmd, cwd=str(spec["cwd"]), stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=STREAM_LIMIT)
                 self.procs[key] = proc
                 proc.stdin.write(spec["prompt"].encode())
@@ -643,6 +674,7 @@ class BeautifyJobs:
                     ev = claude_cli.parse_line(raw)
                     if not ev:
                         continue
+                    log.event(ev)
                     et = ev.get("type")
                     if et == "system" and ev.get("subtype") == "init":
                         mcp = [m["name"] for m in ev.get("mcp_servers", []) if m.get("status") == "connected"]
@@ -680,6 +712,12 @@ class BeautifyJobs:
             ok = False
             stderr_tail = str(e)
         self.procs.pop(key, None)
+        if stderr_tail.strip():
+            log.write("stderr: " + stderr_tail.strip())
+        if spec["settings"]["beautify_engine"] != "api" and not result:
+            log.summary()
+        if job.get("cancelled"):
+            log.write("Cancelled")
 
         if job.get("cancelled"):
             status, error = "cancelled", "Cancelled"
@@ -691,7 +729,11 @@ class BeautifyJobs:
         rec = await asyncio.to_thread(
             beautify.finish, job["project"], job["sid"], job["v"], status,
             duration=round(time.time() - job["started"]), summary=(result.get("result") or "")[:500],
-            cost=result.get("total_cost_usd"), error=error)
+            cost=result.get("total_cost_usd"), error=error, **api_info)
+        if rec.get("frames_added"):
+            log.write(f"Inserted {rec['frames_added']} auto frames into the document")
+        log.write(f"Status: {rec['status']} {rec.get('error', '')}".rstrip())
+        log.close()
         job.update(status=rec["status"], error=rec.get("error", ""), summary=rec.get("summary", ""),
                    finished=time.time(), record=rec)
         self.step(job, {"done": "Finished", "failed": "Failed", "cancelled": "Cancelled"}[rec["status"]])
@@ -705,6 +747,104 @@ class BeautifyJobs:
 
 
 jobs = BeautifyJobs()
+
+
+# ── Batch queue (batch.py): YouTube → download → transcribe → Beautify ──────
+
+class ServerRunner:
+    """Batch stages through the recorder and the Beautify jobs, so they show in the main UI."""
+
+    async def recognize(self, task, stage, file, update):
+        while recorder.active:
+            update(note="Waiting for the recognizer: a recording is running", line="")
+            await asyncio.sleep(2)
+        o = batch.recognize_args(task, stage, S.load_settings())
+        if o["continue_sid"] and not S.transcript_path(task["project"], o["continue_sid"]).exists():
+            o["continue_sid"] = ""
+        await recorder.start({
+            "project": task["project"], "engine": o["engine"], "lang": o["lang"], "speakers": o["speakers"],
+            "pause": o["pause"], "minutes": 600, "source": "video", "source_file": file.name,
+            "source_name": task.get("title") or file.name, "auto_frames": o["auto_frames"],
+            "start": o["start"], "continue_sid": o["continue_sid"], "batch": task["id"]})
+        proc = recorder.proc
+        update(note="", line="Starting the recognizer")
+        try:
+            while proc.returncode is None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(proc.wait()), 1.0)
+                except asyncio.TimeoutError:
+                    pass
+                if recorder.sid:
+                    stage["sid"] = recorder.sid
+                p = recorder.source_progress
+                if recorder.state == "listening" and p and p.get("total"):
+                    update(progress=round(100 * p["done"] / p["total"], 1), note="paused" if p.get("paused") else "",
+                           line=f"Transcribing {batch.fmt_hms(p.get('pos'))} of "
+                                f"{batch.fmt_hms((p.get('offset') or 0) + p['total'])}")
+                elif recorder.state in ("loading", "stopping", "finalizing"):
+                    update(line=recorder.detail or recorder.state.capitalize())
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                recorder.interrupt()
+                await proc.wait()
+            await asyncio.sleep(1.2)
+            if recorder.source_done:
+                stage["position"] = recorder.source_done.get("position")
+            raise
+        await asyncio.sleep(1.2)        # _wait_exit: the event tail drains, the state settles
+        done = recorder.source_done or {}
+        res = {"sid": recorder.sid or stage.get("sid"), "position": done.get("position"),
+               "complete": bool(done.get("complete"))}
+        if not res["complete"] and recorder.stop_requested:
+            pos = res["position"] or stage.get("position")
+            res["error"] = (f"Stopped from the main window at {batch.fmt_hms(pos)}: restart to continue from there"
+                            if pos else "Stopped from the main window before the transcription started")
+        elif recorder.state == "error" and not res["complete"]:
+            res["error"] = f"{recorder.error}\n{recorder.detail}".strip()
+        return res
+
+    async def beautify(self, task, stage, sid, update):
+        key = (task["project"], sid)
+        while jobs.running(*key):
+            update(note="Waiting: a Beautify of this session is already running")
+            await asyncio.sleep(2)
+        try:
+            await jobs.start(task["project"], sid, "final")
+        except HTTPException as e:
+            return {"ok": False, "error": str(e.detail)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        update(note="")
+        try:
+            while True:
+                job = jobs.jobs.get(key)
+                if not job or job["status"] != "running":
+                    break
+                steps = job.get("steps") or []
+                update(line=steps[-1]["text"] if steps else "Beautify",
+                       note=f"{job.get('chars', 0):,} characters written" if job.get("chars") else "")
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            await jobs.cancel(*key)
+            raise
+        job = jobs.jobs.get(key) or {}
+        return {"ok": job.get("status") == "done", "v": job.get("v"), "error": job.get("error") or job.get("status")}
+
+
+def _batch_public(task: dict, log_lines: int = 40) -> dict:
+    out = {**task, "state": batch.task_state(task), "stages": {}}
+    for name, s in task["stages"].items():
+        out["stages"][name] = {**s, "log": (s.get("log") or [])[-log_lines:]} if "log" in s else dict(s)
+    return out
+
+
+def _batch_changed(task: dict, removed: bool = False):
+    hub.emit({"type": "batch_removed", "id": task["id"]} if removed
+             else {"type": "batch_task", "task": _batch_public(task)})
+
+
+batch_queue: batch.Queue | None = None
+batch_orch: batch.Orchestrator | None = None
 
 
 # ── Chat about the transcript ────────────────────────────────────────────────
@@ -908,7 +1048,17 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     # Models the server itself loads (CLIP for "hide similar") report downloads too.
     downloads.set_reporter(lambda ev: loop.call_soon_threadsafe(hub.emit, {"type": "download", **ev}))
+    global batch_queue, batch_orch
+    batch_queue = batch.Queue(S.WEBUI_DIR / "batch.json", on_change=_batch_changed)
+    batch_orch = batch.Orchestrator(batch_queue, ServerRunner(),
+                                    parallel=int(S.load_settings().get("batch_parallel") or batch.DEFAULT_PARALLEL),
+                                    on_external=lambda project: hub.emit({"type": "external", "project": project,
+                                                                          **_external_state(project)}))
+    batch_task = loop.create_task(batch_orch.run())
     yield
+    batch_task.cancel()
+    for tid in {tid for tid, _ in batch_orch.running}:
+        batch_orch.cancel(tid)
     if recorder.active:
         print("Stopping the running recording (finalizing, please wait)...")
         recorder.interrupt()
@@ -1245,7 +1395,8 @@ async def audio_apps():
 
 
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".opus", ".aif", ".aiff", ".caf",
-              ".wma", ".webm", ".mp4", ".mov", ".mkv"}
+              ".wma", ".webm", ".mp4", ".mov", ".mkv", ".m4v", ".avi"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 
 
 def audio_dir(project: str) -> Path:
@@ -1262,8 +1413,48 @@ def audio_file_path(project: str, name: str) -> Path:
 def _audio_files(project: str) -> list[dict]:
     d = audio_dir(project)
     files = [p for p in d.iterdir() if p.is_file() and not p.name.startswith(".")] if d.is_dir() else []
-    return [{"name": p.name, "size": p.stat().st_size, "mtime": p.stat().st_mtime}
+    return [{"name": p.name, "size": p.stat().st_size, "mtime": p.stat().st_mtime,
+             "video": p.suffix.lower() in VIDEO_EXTS}
             for p in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)]
+
+
+MEDIA_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+               ".mkv": "video/x-matroska", ".avi": "video/x-msvideo", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+               ".wav": "audio/wav", ".aac": "audio/aac", ".flac": "audio/flac", ".ogg": "audio/ogg",
+               ".opus": "audio/ogg"}
+
+
+@app.get("/api/projects/{project}/audio/{name}/media")
+async def audio_media(project: str, name: str, request: Request):
+    """The file for the player, with Range support (seeking; Starlette 0.38 has none)."""
+    path = audio_file_path(project, name)
+    size = path.stat().st_size
+    ctype = MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    m = re.match(r"bytes=(\d*)-(\d*)$", request.headers.get("range", "").strip())
+    if not m or (not m.group(1) and not m.group(2)):
+        return FileResponse(path, media_type=ctype, headers={"Accept-Ranges": "bytes"})
+    if m.group(1):
+        start = int(m.group(1))
+        end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+    else:                                   # "bytes=-N": the last N bytes
+        start, end = max(0, size - int(m.group(2))), size - 1
+    if start >= size or start > end:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+
+    def body():
+        with open(path, "rb") as f:
+            f.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = f.read(min(left, 1 << 20))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(body(), status_code=206, media_type=ctype, headers={
+        "Accept-Ranges": "bytes", "Content-Range": f"bytes {start}-{end}/{size}",
+        "Content-Length": str(end - start + 1)})
 
 
 @app.get("/api/projects/{project}/audio")
@@ -1385,6 +1576,101 @@ async def reveal(data: dict = Body(...)):
     return {"ok": True}
 
 
+@app.get("/prompts")
+async def prompts_page():
+    return FileResponse(WEB_DIR / "prompts.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/projects/{project}/prompts")
+async def prompts_get(project: str):
+    project = S.safe_name(project)
+    return {"project": project, "prompts": beautify.prompts_payload(project)}
+
+
+@app.put("/api/projects/{project}/prompts")
+async def prompts_put(project: str, data: dict = Body(...)):
+    """{name: text}: save the project's own version; null (or the default text) resets it."""
+    project = S.safe_name(project)
+    if not S.project_dir(project).is_dir():
+        raise HTTPException(404, "No such project")
+    try:
+        for name, text in data.items():
+            beautify.save_prompt(project, name, None if text is None else str(text))
+    except ValueError as e:
+        _err(e)
+    return {"project": project, "prompts": beautify.prompts_payload(project)}
+
+
+@app.get("/batch")
+async def batch_page():
+    return FileResponse(WEB_DIR / "batch.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/batch")
+async def batch_list():
+    return {"tasks": [_batch_public(t) for t in batch_queue.tasks], "parallel": batch_orch.parallel,
+            "ytdlp": await asyncio.to_thread(batch.ytdlp_info), "ytdlp_stale_days": batch.YTDLP_STALE_DAYS}
+
+
+@app.post("/api/batch/tasks")
+async def batch_add(data: dict = Body(...)):
+    try:
+        added = batch_queue.add(list(data.get("tasks") or []))
+    except ValueError as e:
+        _err(e)
+    batch_orch.kick()
+    return {"added": [t["id"] for t in added]}
+
+
+@app.get("/api/batch/tasks/{task_id}")
+async def batch_task(task_id: str):
+    task = batch_queue.get(task_id)
+    if not task:
+        raise HTTPException(404, "No such task")
+    return _batch_public(task, log_lines=batch.LOG_LINES)
+
+
+@app.delete("/api/batch/tasks/{task_id}")
+async def batch_delete(task_id: str):
+    if not batch_queue.get(task_id):
+        raise HTTPException(404, "No such task")
+    running = [at for (tid, _), at in batch_orch.running.items() if tid == task_id]
+    batch_queue.remove(task_id)         # first: a cancelled stage of a removed task isn't put on hold
+    batch_orch.cancel(task_id)
+    if running:
+        await asyncio.wait(running, timeout=60)
+    batch_orch.kick()
+    return {"ok": True}
+
+
+@app.post("/api/batch/tasks/{task_id}/restart")
+async def batch_restart(task_id: str, data: dict = Body(default={})):
+    stage = data.get("stage")
+    if stage is not None and stage not in batch.STAGES:
+        _err(ValueError(f"Unknown stage: {stage}"))
+    if any(tid == task_id for tid, _ in batch_orch.running if stage in (None, _)):
+        raise HTTPException(409, "That stage is running")
+    try:
+        task = batch_queue.restart(task_id, stage)
+    except KeyError:
+        raise HTTPException(404, "No such task")
+    batch_orch.kick()
+    return _batch_public(task)
+
+
+@app.post("/api/batch/settings")
+async def batch_settings(data: dict = Body(...)):
+    try:
+        n = int(data.get("parallel"))
+    except (TypeError, ValueError):
+        _err(ValueError("Bad number of parallel downloads"))
+    n = max(1, min(10, n))
+    S.save_settings({"batch_parallel": n})
+    batch_orch.parallel = n
+    batch_orch.kick()
+    return {"parallel": n}
+
+
 @app.post("/api/record/start")
 async def record_start(data: dict = Body(...)):
     try:
@@ -1435,8 +1721,13 @@ async def record_cut():
 
 
 @app.post("/api/record/snap")
-async def record_snap():
-    await recorder.snap()
+async def record_snap(data: dict = Body(default={})):
+    at = data.get("at")
+    try:
+        at = None if at is None else max(0.0, float(at))
+    except (TypeError, ValueError):
+        _err(ValueError("Bad position"))
+    await recorder.snap(at)
     return {"ok": True}
 
 

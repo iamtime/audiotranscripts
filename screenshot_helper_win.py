@@ -416,7 +416,8 @@ def _hwnd_of(tk_widget) -> int:
 # ── Daemon ───────────────────────────────────────────────────────────────────
 
 class Daemon:
-    def __init__(self, out_dir: str, config_path: str | None):
+    def __init__(self, out_dir: str, config_path: str | None, hotkeys_only: bool = False):
+        self.hotkeys_only = hotkeys_only    # Ctrl+Shift+S → HOTKEY:SNAP (main.py grabs a video frame)
         self.out_dir = Path(out_dir)
         self.config_path = config_path
         self.actions: queue.Queue = queue.Queue()
@@ -491,7 +492,10 @@ class Daemon:
     def on_hotkey(self, hid: int):
         if hid == 1:
             log("hotkey 1 (screenshot) fired")
-            self.actions.put(self.screenshot)
+            if self.hotkeys_only:
+                emit("HOTKEY:SNAP")
+            else:
+                self.actions.put(self.screenshot)
         elif hid == 2:
             log("hotkey 2 (selection) fired")
             self.actions.put(selected_text)
@@ -709,8 +713,10 @@ def main() -> int:
         s.reconfigure(encoding="utf-8", errors="replace")
     set_dpi_aware()
     args = sys.argv[1:]
+    hotkeys_only = "--hotkeys-only" in args
+    args = [a for a in args if a != "--hotkeys-only"]
     if not args:
-        print("Usage: screenshot_helper_win.py <output-dir> [capture-config.json]\n"
+        print("Usage: screenshot_helper_win.py <output-dir> [capture-config.json] [--hotkeys-only]\n"
               "       screenshot_helper_win.py --select-region | --pick-window | --list-windows\n"
               "       screenshot_helper_win.py --capture <config.json> <out.png>", file=sys.stderr)
         return 1
@@ -731,7 +737,7 @@ def main() -> int:
         return 0
     if args[0] in ("--select-region", "--pick-window"):
         return overlay("region" if args[0] == "--select-region" else "window")
-    Daemon(args[0], args[1] if len(args) > 1 else None).run()
+    Daemon(args[0], args[1] if len(args) > 1 else None, hotkeys_only).run()
     return 0
 
 

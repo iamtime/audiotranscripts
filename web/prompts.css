@@ -1,0 +1,36 @@
+/* ushi - Beautify prompts page (uses the tokens and components of style.css / batch.css) */
+.p-main { flex: 1; display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; padding: 16px; align-items: stretch; min-height: 0; }
+@media (max-width: 860px) { .p-main { grid-template-columns: 1fr; } }
+
+.p-nav { padding: 10px; gap: 4px; align-self: start; position: sticky; top: 70px; }
+.p-nav .p-item { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid transparent; background: none; color: inherit; cursor: pointer; font: inherit; }
+.p-nav .p-item:hover { background: var(--panel-2); }
+.p-nav .p-item.sel { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.p-item .p-name { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 6px; }
+.p-item .p-help { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
+.p-tag { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border-radius: 5px;
+  background: var(--accent-soft); color: var(--accent); }
+.p-tag.dirty { background: var(--warn-soft); color: var(--warn); }
+.p-nav-foot { margin-top: 8px; padding: 10px 11px 4px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.p-nav-foot code { font-size: 11px; word-break: break-all; }
+
+.p-edit { padding: 16px 18px; gap: 12px; display: flex; flex-direction: column; min-height: calc(100vh - 100px); }
+.p-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.p-head h2 { margin: 0; font-size: 17px; font-weight: 640; letter-spacing: -.01em; }
+.p-head p { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; }
+.p-head .spacer { flex: 1; }
+.p-actions { display: flex; gap: 8px; align-items: center; }
+.p-actions .primary-btn:disabled { opacity: .45; cursor: default; filter: none; }
+.p-text { flex: 1; width: 100%; min-height: 420px; resize: vertical; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--line-strong); background: var(--panel-2); color: var(--ink);
+  font: 12.5px/1.6 "SF Mono", ui-monospace, Menlo, monospace; tab-size: 2; }
+.p-text:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.p-ph { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.p-ph-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin-right: 4px; }
+.p-chip { font: 11.5px "SF Mono", ui-monospace, Menlo, monospace; padding: 3px 8px; border-radius: 6px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-2); }
+.p-chip:hover { border-color: var(--accent); color: var(--accent); }
+.p-chip.missing { border-style: dashed; color: var(--warn); }
+.p-warn { padding: 8px 12px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-size: 12.5px; }
+.p-note { font-size: 12px; color: var(--muted); }

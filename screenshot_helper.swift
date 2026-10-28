@@ -12,6 +12,9 @@ import CoreGraphics
 //       "AUTO <seconds>" starts automatic frames: every <seconds> a JPEG of the capture
 //       area goes to <output-dir>/.frames/ and "FRAME:<path>" is printed (no flash).
 //       "AUTO OFF" stops them. main.py decides which frames are worth keeping.
+//   screenshot_helper <output-dir> [capture-config.json] --hotkeys-only
+//       Same daemon, but Ctrl+Shift+S only prints "HOTKEY:SNAP" (main.py grabs the frame of
+//       the video file being watched instead of the screen).
 //   screenshot_helper --select-region     Drag-select overlay → prints REGION:{json}
 //   screenshot_helper --pick-window       Click-a-window overlay → prints WINDOW:{json}
 //   screenshot_helper --list-windows      Prints on-screen windows as a JSON array
@@ -26,6 +29,7 @@ import CoreGraphics
 
 var gScreenshotDir = ""
 var gConfigPath: String? = nil
+var gHotkeysOnly = false
 
 // ── Capture config ───────────────────────────────────────────────────────────
 
@@ -475,9 +479,13 @@ final class OverlayView: NSView {
 
 // ── One-shot modes ───────────────────────────────────────────────────────────
 
-let args = CommandLine.arguments
+var args = CommandLine.arguments
+if let i = args.firstIndex(of: "--hotkeys-only") {
+    gHotkeysOnly = true
+    args.remove(at: i)
+}
 guard args.count > 1 else {
-    fputs("Usage: screenshot_helper <output-dir> [capture-config.json]\n", stderr)
+    fputs("Usage: screenshot_helper <output-dir> [capture-config.json] [--hotkeys-only]\n", stderr)
     fputs("       screenshot_helper --select-region | --pick-window | --list-windows\n", stderr)
     fputs("       screenshot_helper --capture <config.json> <out.png>\n", stderr)
     exit(1)
@@ -531,7 +539,12 @@ let handler: EventHandlerUPP = { (_, event, _) -> OSStatus in
     switch hkID.id {
     case 1:
         fputs("[screenshot-helper] hotkey 1 (screenshot) fired\n", stderr)
-        takeScreenshot()
+        if gHotkeysOnly {
+            print("HOTKEY:SNAP")
+            fflush(stdout)
+        } else {
+            takeScreenshot()
+        }
     case 2:
         fputs("[screenshot-helper] hotkey 2 (selection) fired\n", stderr)
         getSelectedText()

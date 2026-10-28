@@ -201,8 +201,8 @@ $('#modal').addEventListener('mousedown', e => { if (e.target.id === 'modal') cl
 async function loadProjects() {
   st.projects = await api('GET', '/api/projects');
   if (!st.project) {
-    const last = st.settings.last_project;
-    st.project = (st.recorder.active && st.recorder.project) ||
+    const last = st.settings.last_project, want = new URLSearchParams(location.search).get('project');
+    st.project = (want && st.projects.some(p => p.name === want) && want) || (st.recorder.active && st.recorder.project) ||
       (st.projects.find(p => p.name === last) || st.projects[0] || {}).name || null;
   }
   renderProjectMenu();
@@ -328,6 +328,10 @@ $('#sessionBtn').onclick = e => { loadSessions().then(() => openMenu($('#session
 
 // ── Recorder control strip ─────────────────────────────────────────────────
 function renderControl() {
+  renderControlStrip();
+  renderMedia();
+}
+function renderControlStrip() {
   const r = st.recorder, el = $('#control');
   const s = st.settings;
   const mine = r.project === st.project;
@@ -335,13 +339,13 @@ function renderControl() {
 
   if (idle && !st.starting) {
     // Start appends to the selected session; "New session" starts a fresh transcript.
-    const kind = s.source || 'mic';
-    const cont = st.sid && st.session && !st.session.live && kind !== 'file';
+    const kind = s.source || 'mic', isFile = isFileKind(kind), isVideo = kind !== 'file' && isFile;
+    const cont = st.sid && st.session && !st.session.live && !isFile;
     loadSourceLists();
     el.innerHTML = `
       <div class="rec-main">
-        <button class="rec-btn" id="recBtn" ${st.project ? '' : 'disabled'}><span class="dot"></span>${kind === 'file' ? 'Transcribe file' : 'Start recording'}</button>
-        <div class="rec-hint">${kind === 'file' ? 'New session · times are positions in the file' : cont
+        <button class="rec-btn" id="recBtn" ${st.project ? '' : 'disabled'}><span class="dot"></span>${{ file: 'Transcribe file', video: 'Transcribe video', 'video-rt': 'Play & transcribe' }[kind] || 'Start recording'}</button>
+        <div class="rec-hint">${isFile ? `New session · ${media.start || media.end != null ? `range ${fmtPos(media.start)} – ${media.end != null ? fmtPos(media.end) : 'end'}` : 'times are positions in the file'}` : cont
           ? `Appends to <b>${esc(sidLabel(st.sid))}</b> · <button class="link-btn" id="newSessBtn">new session instead</button>`
           : 'Starts a new session'}${kind === 'app+mic' ? ' · use headphones' : ''}</div>
       </div>
@@ -353,10 +357,10 @@ function renderControl() {
           <div class="seg" id="langSeg">${['auto', 'en', 'ru'].map(l => `<button data-v="${l}" class="${(s.lang || 'auto') === l ? 'on' : ''}" ${engineBlocksLang(s.engine, l) ? `disabled title="${ENGINES.gigaam.name} recognizes Russian only"` : ''}>${l === 'auto' ? 'Auto' : l.toUpperCase()}</button>`).join('')}</div></div>
         <div class="opt"><span class="opt-label">Speakers</span>
           <select class="field" id="spkSel">${['auto', 'off', '2', '3', '4', '5', '6', '8'].map(v => `<option value="${v}" ${String(s.speakers || 'auto') === v ? 'selected' : ''}>${v === 'auto' ? 'Detect' : v === 'off' ? 'Off' : v}</option>`).join('')}</select></div>
-        ${kind === 'file' ? '' : `<div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${esc(s.minutes || 180)}"> min</div>`}
+        ${isFile ? '' : `<div class="opt"><span class="opt-label">Auto-stop</span><input class="field num" id="minInp" type="number" min="1" value="${esc(s.minutes || 180)}"> min</div>`}
         ${pauseControl(s.pause || 1.5)}
-        ${kind === 'file' ? '' : `<label class="switch opt"><input type="checkbox" id="audioChk" ${s.save_audio ? 'checked' : ''}><span class="knob"></span>Save audio</label>
-        <label class="switch opt" title="Capture the screen every second and keep the frames that show something new"><input type="checkbox" id="autoChk" ${s.auto_frames ? 'checked' : ''}><span class="knob"></span>Auto frames</label>`}
+        ${isFile ? '' : `<label class="switch opt"><input type="checkbox" id="audioChk" ${s.save_audio ? 'checked' : ''}><span class="knob"></span>Save audio</label>`}
+        ${kind === 'file' ? '' : `<label class="switch opt" title="${isVideo ? 'Take a frame of the video every second (full resolution) and keep the ones that show something new' : 'Capture the screen every second and keep the frames that show something new'}"><input type="checkbox" id="autoChk" ${s.auto_frames ? 'checked' : ''}><span class="knob"></span>Auto frames</label>`}
       </div>`;
     $('#recBtn').onclick = startRecording;
     const nb = $('#newSessBtn'); if (nb) nb.onclick = newSession;
@@ -368,11 +372,11 @@ function renderControl() {
       renderControl();
     };
     $('#spkSel').onchange = e => { st.settings.speakers = e.target.value; };
-    if (kind !== 'file') {
+    if (!isFile) {
       $('#minInp').onchange = e => { st.settings.minutes = +e.target.value || 180; };
       $('#audioChk').onchange = e => { st.settings.save_audio = e.target.checked; };
-      $('#autoChk').onchange = e => { st.settings.auto_frames = e.target.checked; };
     }
+    if (kind !== 'file') $('#autoChk').onchange = e => { st.settings.auto_frames = e.target.checked; };
     bindPause();
     return;
   }
@@ -409,10 +413,10 @@ function renderControl() {
     return;
   }
   // listening
-  const isFile = r.source === 'file';
+  const isFile = isFileKind(r.source), isVideo = isFile && r.source !== 'file';
   el.innerHTML = `
     <button class="stop-btn" id="recBtn" title="Stop (same as Ctrl+C)"><span class="sq"></span>${isFile ? 'Stop' : 'Stop recording'}</button>
-    ${isFile ? '' : `<button class="ghost-btn mute-btn${r.muted ? ' on' : ''}" id="muteBtn" title="${r.muted ? 'Unmute the microphone and continue' : 'Mute the microphone; the session keeps running'}">${r.muted ? ICON.play + 'Resume' : ICON.pause + 'Pause'}</button>`}
+    <button class="ghost-btn mute-btn${r.muted ? ' on' : ''}" id="muteBtn" title="${isFile ? (r.muted ? 'Continue reading the file' : 'Pause reading the file; the session keeps running') : r.muted ? 'Unmute the microphone and continue' : 'Mute the microphone; the session keeps running'}">${r.muted ? ICON.play + 'Resume' : ICON.pause + 'Pause'}</button>
     <div class="rec-state"><span class="rec-pill${r.muted ? ' paused' : ''}"><span class="dot"></span>${r.muted ? 'PAUSED' : 'REC'}</span><span class="timer mono" id="timer">0:00</span></div>
     <canvas class="meter" id="meter" width="336" height="68"></canvas>
     <div class="pipe-status" id="pipeStatus"></div>
@@ -424,14 +428,12 @@ function renderControl() {
     ${sourceChip(r)}
     <div class="spacer"></div>
     ${!mine ? `<span class="state-sub">Recording in <b>${esc(r.project)}</b></span>` : ''}
-    ${isFile ? '' : `<button class="ghost-btn auto-btn${r.auto_frames ? ' on' : ''}" id="autoBtn" title="${r.auto_frames ? 'Stop automatic frames' : 'Capture the screen every second and keep the frames that show something new'}"><span class="auto-dot"></span>Auto${r.auto_frames && r.frame_stats && r.frame_stats.scenes != null ? ` · ${r.frame_stats.scenes}` : ''}</button>
-    <button class="ghost-btn" id="snapBtn" title="Take a screenshot of the capture area">${ICON.camera}Snap</button>`}`;
+    ${isFile && !isVideo ? '' : `<button class="ghost-btn auto-btn${r.auto_frames ? ' on' : ''}" id="autoBtn" title="${r.auto_frames ? 'Stop automatic frames' : isVideo ? 'Take a frame of the video every second and keep the ones that show something new' : 'Capture the screen every second and keep the frames that show something new'}"><span class="auto-dot"></span>Auto${r.auto_frames && r.frame_stats && r.frame_stats.scenes != null ? ` · ${r.frame_stats.scenes}` : ''}</button>`}
+    ${isFile && r.source !== 'video-rt' ? '' : `<button class="ghost-btn" id="snapBtn" title="${isVideo ? 'Save the video frame on screen (full resolution)' : 'Take a screenshot of the capture area'}">${ICON.camera}Snap</button>`}`;
   $('#recBtn').onclick = stopRecording;
-  if (!isFile) {
-    $('#autoBtn').onclick = toggleAutoFrames;
-    $('#muteBtn').onclick = toggleMute;
-    $('#snapBtn').onclick = snap;
-  }
+  $('#muteBtn').onclick = toggleMute;
+  const ab = $('#autoBtn'); if (ab) ab.onclick = toggleAutoFrames;
+  const sb = $('#snapBtn'); if (sb) sb.onclick = snap;
   bindPause();
   bindMinutes();
   renderPipeline();
@@ -439,7 +441,10 @@ function renderControl() {
 }
 
 // ── Audio source: microphone, an app's audio (+ mic), or an audio file ─────
-const SOURCES = [['mic', 'Microphone'], ['app+mic', 'App + mic'], ['app', 'App only'], ['file', 'Audio file']];
+const SOURCES = [['mic', 'Microphone'], ['app+mic', 'App + mic'], ['app', 'App only'], ['file', 'Audio file'],
+  ['video-rt', 'Video file (real-time player)'], ['video', 'Video file (background)']];
+const FILE_KINDS = ['file', 'video', 'video-rt'];
+const isFileKind = k => FILE_KINDS.includes(k);
 const audioUrl = () => `/api/projects/${encodeURIComponent(st.project)}/audio`;
 const audioSrc = { apps: null, files: null, filesProject: null, loading: false };
 
@@ -460,10 +465,10 @@ function sourceControl(s) {
       const note = (list.find(x => x.note) || {}).note;
       if (note) extra += `<span class="state-sub" title="${esc(note)}">⚠ All apps are recorded</span>`;
     }
-  } else if (kind === 'file') {
-    const files = audioSrc.files || [];
+  } else if (isFileKind(kind)) {
+    const files = (audioSrc.files || []).filter(f => kind === 'file' || f.video);
     extra = files.length
-      ? `<select class="field" id="fileSel" title="Audio file to transcribe (stored in the project's audio folder)">
+      ? `<select class="field" id="fileSel" title="${kind === 'file' ? "Audio file to transcribe (stored in the project's audio folder)" : "Video file to transcribe (stored in the project's audio folder)"}">
           ${files.map(f => `<option value="${esc(f.name)}" ${f.name === s.source_file ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
           <option value="__upload">Upload another file…</option></select>`
       : '<button class="ghost-btn small" id="fileUpload">Choose a file…</button>';
@@ -473,7 +478,7 @@ function sourceControl(s) {
 }
 
 function bindSource() {
-  $('#srcSel').onchange = e => { st.settings.source = e.target.value; renderControl(); };
+  $('#srcSel').onchange = e => { st.settings.source = e.target.value; fitSourceFile(); renderControl(); };
   const as = $('#appSel'); if (as) as.onchange = e => { st.settings.source_app = e.target.value; };
   const ar = $('#appRefresh'); if (ar) ar.onclick = () => { audioSrc.apps = null; renderControl(); };
   const fs = $('#fileSel');
@@ -488,7 +493,7 @@ function bindSource() {
 async function loadSourceLists() {
   const s = st.settings, kind = s.source || 'mic';
   const needApps = (kind === 'app' || kind === 'app+mic') && !audioSrc.apps;
-  const needFiles = kind === 'file' && st.project && audioSrc.filesProject !== st.project;
+  const needFiles = isFileKind(kind) && st.project && audioSrc.filesProject !== st.project;
   if (audioSrc.loading || (!needApps && !needFiles)) return;
   audioSrc.loading = true;
   try {
@@ -501,10 +506,18 @@ async function loadSourceLists() {
     if (needFiles) {
       audioSrc.files = (await api('GET', audioUrl())).files;
       audioSrc.filesProject = st.project;
-      if (!audioSrc.files.some(f => f.name === s.source_file)) s.source_file = audioSrc.files.length ? audioSrc.files[0].name : '';
+      fitSourceFile();
     }
   } catch (e) { fail(e); } finally { audioSrc.loading = false; }
   if (!st.recorder.active && !st.starting) renderControl();
+}
+
+// The selected file must suit the source: a video source needs a video file.
+function fitSourceFile() {
+  const s = st.settings, files = audioSrc.files;
+  if (!files || !isFileKind(s.source)) return;
+  const ok = files.filter(f => s.source === 'file' || f.video);
+  if (!ok.some(f => f.name === s.source_file)) s.source_file = ok.length ? ok[0].name : '';
 }
 
 function pickAudioFile() {
@@ -523,21 +536,212 @@ async function uploadAudio(file) {
     const d = await res.json().catch(() => null);
     if (!res.ok) throw new Error((d && d.detail) || `${res.status} ${res.statusText}`);
     audioSrc.files = d.files; audioSrc.filesProject = st.project;
-    st.settings.source = 'file'; st.settings.source_file = d.name;
+    const up = d.files.find(f => f.name === d.name);
+    if (!isFileKind(st.settings.source) || (up && !up.video)) st.settings.source = up && up.video ? 'video' : 'file';
+    st.settings.source_file = d.name;
     renderControl();
-    toast(`${d.name} is ready. Press “Transcribe file”.`, 'ok');
+    toast(`${d.name} is ready. Set the range if needed and press the red button.`, 'ok');
   } catch (e) { fail(e); }
 }
 
 function sourceChip(r) {
   const kind = r.source || 'mic';
   if (kind === 'mic') return '';
-  if (kind === 'file') {
+  if (isFileKind(kind)) {
     const p = r.source_progress;
-    return `<span class="chip" id="srcChip" title="${esc(r.source_name || 'Audio file')}">FILE${p && p.total ? ` ${fmtDur(p.done)} / ${fmtDur(p.total)}` : ''}</span>`;
+    return `<span class="chip" id="srcChip" title="${esc(r.source_name || 'Audio file')}">${kind === 'file' ? 'FILE' : 'VIDEO'}${p && p.total ? ` ${fmtDur(p.done)} / ${fmtDur(p.total)}` : ''}</span>`;
   }
   const name = (r.source_name || r.source_app || 'app').toUpperCase();
   return `<span class="chip" title="${kind === 'app+mic' ? 'App audio → Them, microphone → Me' : 'App audio only'}">${esc(name)}${kind === 'app+mic' ? ' + MIC' : ''}</span>`;
+}
+
+// ── Media panel: the chosen audio / video file - the range to transcribe, the real-time player ──
+// Idle: a player with native controls; "Set start" / "Set end" take its position. While a file
+// is being transcribed the range is fixed; "video-rt" plays along, kept in step with the
+// recognizer's position (source_progress.pos), background modes just show where it is.
+const media = { key: '', kind: '', duration: 0, start: 0, end: null, live: false };
+const mediaUrl = (project, name) => `/api/projects/${encodeURIComponent(project)}/audio/${encodeURIComponent(name)}/media`;
+const VIDEO_RE = /\.(mp4|mov|mkv|webm|m4v|avi)$/i;
+
+function fmtPos(sec) {
+  const tenths = Math.round(Math.max(0, +sec || 0) * 10);
+  return `${fmtDur(Math.floor(tenths / 10))}.${tenths % 10}`;
+}
+// '90', '1:30', '1:02:03.5' → seconds; '' → null; garbage → NaN
+function parsePos(v) {
+  v = String(v ?? '').trim();
+  if (!v) return null;
+  const parts = v.split(':');
+  if (parts.length > 3 || parts.some(p => !/^\d+(\.\d*)?$/.test(p.trim()))) return NaN;
+  return parts.reduce((a, p) => a * 60 + parseFloat(p), 0);
+}
+
+// The running file session, or (idle / starting) the file picked in the source menu.
+function mediaTarget() {
+  const r = st.recorder, s = st.settings;
+  if (r.active && isFileKind(r.source)) {
+    const o = r.options || {};
+    return o.source_file ? { project: r.project, name: o.source_file, kind: r.source, live: true } : null;
+  }
+  if ((r.active || r.state === 'error') && !st.starting) return null;
+  if (isFileKind(s.source) && s.source_file && st.project)
+    return { project: st.project, name: s.source_file, kind: s.source, live: !!st.starting };
+  return null;
+}
+
+function renderMedia() {
+  const panel = $('#mediaPanel'), t = mediaTarget();
+  if (!t) {
+    const v = $('#mVideo'); if (v) v.pause();
+    if (media.key) { panel.innerHTML = ''; media.key = ''; }
+    panel.classList.add('off');
+    return;
+  }
+  const key = `${t.project}/${t.name}`;
+  const file = (audioSrc.files || []).find(f => f.name === t.name);
+  panel.classList.remove('off');
+  panel.classList.toggle('audio', !(file ? file.video : VIDEO_RE.test(t.name)));
+  if (media.key !== key) buildMedia(t, key);
+  const v = $('#mVideo');
+  if (media.live && !t.live) {          // the run is over: back to the idle player
+    v.pause(); v.playbackRate = 1;
+    if (media.kind !== 'video-rt' || v.dataset.autoMuted) { v.muted = false; delete v.dataset.autoMuted; }
+  }
+  media.live = t.live; media.kind = t.kind;
+  panel.classList.toggle('live', t.live);
+  v.controls = !t.live;
+  if (t.live && t.kind !== 'video-rt') v.muted = true;
+  $('#mRangeCtl').classList.toggle('hidden', t.live);
+  if (t.live) mediaSync(); else updateMedia();
+}
+
+function buildMedia(t, key) {
+  const panel = $('#mediaPanel'), o = st.recorder.options || {};
+  media.key = key; media.duration = 0;
+  media.start = t.live ? (+o.start || 0) : 0;
+  media.end = t.live && o.end != null ? +o.end : null;
+  panel.innerHTML = `
+    <video id="mVideo" preload="metadata" playsinline src="${esc(mediaUrl(t.project, t.name))}"></video>
+    <div class="media-side">
+      <div class="m-title"><b>${esc(t.name)}</b><span class="state-sub" id="mState"></span></div>
+      <div class="m-track" id="mTrack" title="Click to move the player here"><div class="m-range" id="mRange"></div><div class="m-done" id="mDone"></div><div class="m-head" id="mHead"></div></div>
+      <div class="m-ctl">
+        <span class="m-now mono" id="mNow">0:00.0</span>
+        <span id="mRangeCtl" class="m-ctl">
+          <span class="sep"></span>
+          <button class="ghost-btn small" id="mSetStart" title="Start transcribing at the player's position">Set start</button>
+          <input class="field m-time" id="mStart" title="Start: seconds, M:SS or H:MM:SS">
+          <span>–</span>
+          <input class="field m-time" id="mEnd" placeholder="end" title="End: seconds, M:SS or H:MM:SS (empty = the end of the file)">
+          <button class="ghost-btn small" id="mSetEnd" title="Stop transcribing at the player's position">Set end</button>
+          <button class="link-btn" id="mReset" title="Transcribe the whole file">Whole file</button>
+          <span class="state-sub" id="mLen"></span>
+        </span>
+      </div>
+      <div class="state-sub" id="mHint"></div>
+    </div>`;
+  const v = $('#mVideo');
+  v.addEventListener('loadedmetadata', () => {
+    media.duration = isFinite(v.duration) ? v.duration : 0;
+    if (!media.live) v.currentTime = media.start;
+    updateMedia();
+  });
+  v.addEventListener('timeupdate', updateMedia);
+  v.addEventListener('seeked', updateMedia);
+  $('#mTrack').onclick = e => {
+    if (media.live || !media.duration) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    v.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * media.duration;
+  };
+  $('#mSetStart').onclick = () => setRange(v.currentTime, media.end != null && media.end <= v.currentTime ? null : media.end);
+  $('#mSetEnd').onclick = () => setRange(media.start, v.currentTime);
+  $('#mReset').onclick = () => setRange(0, null);
+  $('#mStart').onchange = e => { const x = parsePos(e.target.value); setRange(x == null ? 0 : x, media.end); };
+  $('#mEnd').onchange = e => setRange(media.start, parsePos(e.target.value));
+}
+
+function setRange(start, end) {
+  const dur = media.duration || Infinity;
+  if (Number.isNaN(start) || Number.isNaN(end)) { toast('Use seconds, M:SS or H:MM:SS', 'error'); updateMedia(); return; }
+  start = Math.max(0, Math.min(start, dur));
+  if (end != null && end >= dur - 0.05) end = null;      // up to the end of the file
+  if (end != null && end <= start) { toast('The end must be after the start', 'error'); updateMedia(); return; }
+  media.start = Math.round(start * 10) / 10;
+  media.end = end == null ? null : Math.round(end * 10) / 10;
+  const v = $('#mVideo'); if (v && (v.currentTime < media.start || (media.end != null && v.currentTime > media.end))) v.currentTime = media.start;
+  renderControlStrip();     // the Start button's hint shows the range
+  updateMedia();
+}
+
+function updateMedia() {
+  const v = $('#mVideo'); if (!v) return;
+  const r = st.recorder, p = r.source_progress, dur = media.duration;
+  const end = media.end ?? dur, pct = x => `${dur ? Math.max(0, Math.min(100, 100 * x / dur)) : 0}%`;
+  const livePos = media.live && p && p.pos != null ? p.pos : null;
+  const head = media.live && media.kind !== 'video-rt' && livePos != null ? livePos : v.currentTime;
+  const rg = $('#mRange'); rg.style.left = pct(media.start); rg.style.width = dur ? `calc(${pct(end)} - ${pct(media.start)})` : '0';
+  const dn = $('#mDone');
+  dn.style.display = livePos != null ? '' : 'none';
+  if (livePos != null) { dn.style.left = pct(media.start); dn.style.width = `calc(${pct(livePos)} - ${pct(media.start)})`; }
+  $('#mHead').style.left = pct(head);
+  $('#mNow').textContent = `${fmtPos(head)}${dur ? ` / ${fmtDur(dur)}` : ''}`;
+  const si = $('#mStart'), ei = $('#mEnd');
+  if (document.activeElement !== si) si.value = fmtPos(media.start);
+  if (document.activeElement !== ei) ei.value = media.end == null ? '' : fmtPos(media.end);
+  $('#mLen').textContent = dur ? `${fmtDur(end - media.start)} to transcribe` : '';
+  $('#mState').textContent = media.live && livePos != null
+    ? `${p.paused ? 'paused at' : media.kind === 'video-rt' ? 'playing' : 'reading'} ${fmtPos(livePos)} · range ${fmtDur(media.start)}–${fmtDur(end)}` : '';
+  const hint = $('#mHint');
+  if (media.live) {
+    hint.innerHTML = media.kind === 'video-rt'
+      ? `Plays in step with the recognizer · <b>Pause</b> / <b>Stop</b> above · <kbd>⌃</kbd><kbd>⇧</kbd><kbd>S</kbd> or <b>Snap</b> saves the frame on screen${v.dataset.autoMuted ? ' · <button class="link-btn" id="mUnmute">sound is off: turn on</button>' : ''}`
+      : 'Read faster than real time, not played · the picture shows where the recognizer is';
+    const um = $('#mUnmute'); if (um) um.onclick = () => { v.muted = false; delete v.dataset.autoMuted; updateMedia(); };
+    return;
+  }
+  const d = r.source_done, name = (st.settings.source_file || '');
+  const resume = d && !d.complete && d.file === name && d.position > media.start + 1;
+  hint.innerHTML = (resume ? `Last run stopped at <b>${fmtPos(d.position)}</b> · <button class="link-btn" id="mResume">continue from there</button> · ` : '') +
+    ({ 'video-rt': 'Plays from the start mark in real time; Ctrl+Shift+S takes the video frame, not a screenshot',
+       video: 'Faster than real time in the background; auto frames come straight from the video',
+       file: 'Faster than real time' }[media.kind] || '');
+  const rb = $('#mResume'); if (rb) rb.onclick = () => setRange(d.position, media.end);
+}
+
+// Keep the real-time player on the recognizer's clock; in the background modes show its position.
+function mediaSync() {
+  const v = $('#mVideo'), r = st.recorder, p = r.source_progress;
+  if (!v || !media.live) return;
+  if (!p || p.pos == null) {                      // not reading yet (decoding the audio)
+    if (Math.abs(v.currentTime - media.start) > 0.3 && !v.seeking) v.currentTime = media.start;
+    updateMedia();
+    return;
+  }
+  if (media.kind === 'video-rt') {
+    if (p.paused || r.state !== 'listening') {
+      if (!v.paused) v.pause();
+      if (Math.abs(v.currentTime - p.pos) > 0.3 && !v.seeking) v.currentTime = p.pos;
+    } else {
+      const drift = v.currentTime - p.pos;
+      if (Math.abs(drift) > 0.8) { if (!v.seeking) v.currentTime = p.pos; v.playbackRate = 1; }
+      else v.playbackRate = drift > 0.15 ? 0.95 : drift < -0.15 ? 1.05 : 1;
+      if (v.paused && !v.ended) v.play().catch(() => {           // no sound without a click: play muted
+        v.muted = true; v.dataset.autoMuted = '1'; v.play().catch(() => {}); updateMedia();
+      });
+    }
+  } else if (!v.seeking && Math.abs(v.currentTime - p.pos) > 2) {
+    if (!v.paused) v.pause();
+    v.currentTime = p.pos;
+  }
+  updateMedia();
+}
+
+// Called inside the click on "Play & transcribe": a play() now lets later play() calls have sound.
+function unlockPlayer() {
+  const v = $('#mVideo'); if (!v) return;
+  v.currentTime = media.start;
+  const pr = v.play();
+  if (pr) pr.then(() => { if (!(st.recorder.source_progress && st.recorder.active)) v.pause(); }).catch(() => {});
 }
 
 function newSession() {
@@ -597,9 +801,9 @@ function renderPipeline() {
   const el = $('#pipeStatus');
   if (el) {
     const speaking = pl.speech != null;
-    const isFile = st.recorder.source === 'file';
+    const isFile = isFileKind(st.recorder.source);
     const l1 = st.recorder.muted
-      ? `<span class="a-dot paused"></span><b>Paused</b><span class="pl-sub">${(st.recorder.source || 'mic') === 'mic' ? 'microphone' : 'audio'} muted · session continues</span>`
+      ? `<span class="a-dot paused"></span><b>Paused</b><span class="pl-sub">${isFile ? 'reading the file is on hold' : `${(st.recorder.source || 'mic') === 'mic' ? 'microphone' : 'audio'} muted`} · session continues</span>`
       : speaking
       ? `<span class="a-dot speech"></span><b>Speech ${fmtSec(pl.speech)}</b><span class="pl-sub">${isFile ? 'in the file' : 'recording'} · sent after a ${(pl.pause || 1.5).toFixed(1)} s pause${isFile ? '' : ' · <button class="link-btn cut-btn" title="End this phrase now and send it to the recognizer, without waiting for the pause">Cut</button>'}</span>`
       : `<span class="a-dot"></span><b>${isFile ? 'Reading the file' : 'Listening'}</b><span class="pl-sub">waiting for speech</span>`;
@@ -645,7 +849,7 @@ function tickTimer() {
   const from = r.listening_at || r.started_at;
   if (!from) return;
   const el = Date.now() / 1000 - from;
-  t.innerHTML = fmtDur(el) + (r.minutes ? `<small>/ ${Math.round(r.minutes)} min</small>` : '');
+  t.innerHTML = fmtDur(el) + (r.minutes && !isFileKind(r.source) ? `<small>/ ${Math.round(r.minutes)} min</small>` : '');
 }
 setInterval(() => { tickTimer(); tickJobs(); }, 1000);
 
@@ -713,15 +917,17 @@ async function startRecording() {
     }
     const kind = s.source || 'mic';
     if ((kind === 'app' || kind === 'app+mic') && !s.source_app) throw new Error('Pick the app whose audio to transcribe');
-    if (kind === 'file' && !s.source_file) throw new Error('Choose an audio file first');
+    if (isFileKind(kind) && !s.source_file) throw new Error(kind === 'file' ? 'Choose an audio file first' : 'Choose a video file first');
+    if (kind === 'video-rt') unlockPlayer();      // still inside the click: allow playback with sound later
     const app = ((audioSrc.apps && audioSrc.apps.apps) || []).find(a => a.bundle === s.source_app);
     await api('POST', '/api/record/start', {
       project: st.project, engine, lang: s.lang || 'auto', speakers: s.speakers || 'auto',
-      minutes: s.minutes || 180, pause: s.pause || 1.5, save_audio: kind !== 'file' && !!s.save_audio,
+      minutes: s.minutes || 180, pause: s.pause || 1.5, save_audio: !isFileKind(kind) && !!s.save_audio,
       auto_frames: kind !== 'file' && !!s.auto_frames,
-      continue_sid: kind !== 'file' && st.sid && st.session && !st.session.live ? st.sid : '',
+      continue_sid: !isFileKind(kind) && st.sid && st.session && !st.session.live ? st.sid : '',
       source: kind, source_app: s.source_app || '', source_file: s.source_file || '',
-      source_name: kind === 'file' ? s.source_file : kind === 'mic' ? '' : (app ? app.name : s.source_app),
+      source_name: isFileKind(kind) ? s.source_file : kind === 'mic' ? '' : (app ? app.name : s.source_app),
+      ...(isFileKind(kind) ? { start: media.start || 0, end: media.end } : {}),
     });
   } catch (e) { st.starting = false; renderControl(); fail(e); }
 }
@@ -768,7 +974,11 @@ async function cutPhrase() { try { await api('POST', '/api/record/cut'); } catch
 // on pointerdown: a click needs press and release on the same node, and a re-render between
 // the two replaces it, so the click never fires.
 document.addEventListener('pointerdown', e => { if (e.button === 0 && e.target.closest('.cut-btn')) { e.preventDefault(); cutPhrase(); } });
-async function snap() { try { await api('POST', '/api/record/snap'); } catch (e) { fail(e); } }
+async function snap() {
+  // Watching a video: the frame on screen, not where the recognizer's clock is.
+  const v = $('#mVideo'), at = st.recorder.source === 'video-rt' && v ? v.currentTime : undefined;
+  try { await api('POST', '/api/record/snap', at != null ? { at } : {}); } catch (e) { fail(e); }
+}
 $('#snapSideBtn').onclick = snap;
 
 // ── Transcript ─────────────────────────────────────────────────────────────
@@ -970,10 +1180,10 @@ function renderGhost() {
   } else if (r.state !== 'listening') {
     inner = `<span class="spinner tiny"></span><span>Starting…</span><span class="pl-sub">${esc(r.detail || 'loading models')}</span>`;
   } else if (r.muted) {
-    inner = `<span class="a-dot paused"></span><span>Paused</span><span class="pl-sub">microphone is muted · press Resume to continue</span>`;
+    inner = `<span class="a-dot paused"></span><span>Paused</span><span class="pl-sub">${isFileKind(r.source) ? 'reading the file is on hold' : 'microphone is muted'} · press Resume to continue</span>`;
   } else if (sp != null) {
     inner = `<span class="wave"><i></i><i></i><i></i><i></i></span><span>Speaking · ${fmtSec(sp)}</span>
-      <span class="pl-sub">goes to transcription after a ${(st.pipeline.pause || 1.5).toFixed(1)} s pause</span>${r.source === 'file' ? '' : CUT_BTN}`;
+      <span class="pl-sub">goes to transcription after a ${(st.pipeline.pause || 1.5).toFixed(1)} s pause</span>${isFileKind(r.source) ? '' : CUT_BTN}`;
   } else {
     inner = `<span class="listen-dot"></span><span class="shimmer">Listening…</span><span class="pl-sub">waiting for speech</span>`;
   }
@@ -1314,10 +1524,10 @@ function renderBeautify() {
   } else if (latest) {
     const fin = latest.mode === 'final';
     status = `<div class="b-status" id="bStatus" title="Open the beautified version"><span class="s1"><span class="check">${ICON.check}</span>${fin ? 'Final version ready' : 'Beautification finished'}</span>
-      <span class="s2">v${latest.v} · ${esc(relTime(latest.finished || latest.created))}${latest.turns ? ` · ${latest.turns} turns` : ''}</span></div>`;
+      <span class="s2">${latest.warning ? '⚠ ' : ''}v${latest.v} · ${esc(relTime(latest.finished || latest.created))}${latest.turns ? ` · ${latest.turns} turns` : ''}</span></div>`;
   }
   const canRun = !!(st.ai && st.ai.ready);
-  el.innerHTML = `${status}<div class="split"><button class="beautify-btn" id="bRun" title="${canRun ? esc(st.ai.label) : esc((st.ai && st.ai.problem) || 'AI is not set up') + ' - click to set up'}">${ICON.sparkle}Beautify</button><button class="beautify-btn more" id="bMore" title="More options" ${canRun ? '' : 'disabled'}>${ICON.chev}</button></div>`;
+  el.innerHTML = `${status}<div class="split"><button class="beautify-btn" id="bRun" title="${canRun ? esc(st.ai.label) : esc((st.ai && st.ai.problem) || 'AI is not set up') + ' - click to set up'}">${ICON.sparkle}Beautify</button><button class="beautify-btn more" id="bMore" title="More options">${ICON.chev}</button></div>`;
   $('#bRun').onclick = () => canRun ? runBeautify(latest ? 'update' : 'full') : openAiSetup();
   $('#bMore').onclick = e => openBeautifyMenu(e.currentTarget);
   const bs = $('#bStatus'); if (bs) bs.onclick = () => switchTab('beautified');
@@ -1332,11 +1542,15 @@ function openBeautifyMenu(anchor) {
     <button class="mi" data-mode="update" ${latest ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Update with new material</div><div class="mi-sub">Extends v${latest ? latest.v : '-'} with new speech and screenshots · fastest</div></span></button>
     <button class="mi" data-mode="full"><span class="mi-main"><div class="mi-title">Full rebuild</div><div class="mi-sub">Regenerates the whole document from the transcript</div></span></button>
     <button class="mi" data-mode="final" ${finished ? '' : 'disabled style="opacity:.5"'}><span class="mi-main"><div class="mi-title">Final version</div><div class="mi-sub">${finished ? 'Definitive document with every speaker identified; also saved to docs/' : 'Available after the recording stops (runs automatically)'}</div></span></button>
+    <button class="mi" data-prompts="1"><span class="mi-main"><div class="mi-title">Edit prompt(s)…</div><div class="mi-sub">What Beautify asks the model to do, for this project only</div></span></button>
     <button class="mi mi-ai" data-ai="1"><span class="mi-main"><div class="mi-title">AI: ${esc(st.ai ? st.ai.label : '-')}</div><div class="mi-sub">Change the provider (Claude Code, Gemini, OpenAI, …), API key, model</div></span></button>`;
   m.onclick = e => {
     if (e.target.closest('.mi[data-ai]')) { closeMenus(); openAiSetup(); return; }
+    if (e.target.closest('.mi[data-prompts]')) { closeMenus(); window.open(`/prompts?project=${encodeURIComponent(st.project)}`, 'ushi-prompts'); return; }
     const b = e.target.closest('.mi[data-mode]'); if (!b || b.disabled) return;
-    closeMenus(); runBeautify(b.dataset.mode);
+    closeMenus();
+    if (!(st.ai && st.ai.ready)) { openAiSetup(); return; }   // the menu opens without AI too: Edit prompt(s)
+    runBeautify(b.dataset.mode);
   };
   openMenu(m, anchor, 'right');
 }
@@ -1404,7 +1618,7 @@ function renderJobCard() {
   card.classList.remove('hidden');
   const steps = job.steps.slice(-9);
   card.innerHTML = `<div class="jc-head"><div style="flex:1"><div class="jc-title">Beautifying v${job.v} · ${esc(modeLabel(job.mode))}</div>
-      <div class="jc-sub">${job.lines || 0} lines · ${job.shots || 0} screenshots · <span id="jcChars">${(job.chars / 1024).toFixed(0)} KB generated</span></div></div>
+      <div class="jc-sub">${job.lines || 0} lines · ${job.shots || 0} screenshots${job.frames ? ` · ${job.frames} frames (added after)` : ''} · <span id="jcChars">${(job.chars / 1024).toFixed(0)} KB generated</span>${job.log_url ? ` · <a href="${esc(job.log_url)}" target="_blank" title="What the model is doing, with timings (refresh to follow)">Log</a>` : ''}</div></div>
       <span class="mono" id="jcElapsed" style="font-size:20px">${fmtDur(Date.now() / 1000 - job.started)}</span></div>
     <div class="bar"><i></i></div>
     <ul class="steps">${steps.map((s, i) => {
@@ -1434,15 +1648,23 @@ function renderDoc() {
   wrap.classList.remove('hidden');
   const sel = vs.find(v => v.v === st.docVersion) || vs[vs.length - 1];
   st.docVersion = sel.v;
+  // Every run is kept: done ones can be opened, failed / cancelled ones are listed for their log.
+  const all = versions().filter(v => v.status !== 'running');
+  const lastFailed = all.length && all[all.length - 1].status !== 'done' ? all[all.length - 1] : null;
   tb.innerHTML = `
-    <select class="field" id="verSel">${[...vs].reverse().map(v => `<option value="${v.v}" ${v.v === sel.v ? 'selected' : ''}>v${v.v} · ${esc(v.mode === 'final' ? 'Final' : modeLabel(v.mode))} · ${esc(relTime(v.finished || v.created))}</option>`).join('')}</select>
+    <label class="ver-label" for="verSel" title="Every Beautify run is kept">History</label>
+    <select class="field" id="verSel">${[...all].reverse().map(v => `<option value="${v.v}" ${v.v === sel.v ? 'selected' : ''} ${v.status === 'done' ? '' : 'disabled'}>v${v.v} · ${esc(v.mode === 'final' ? 'Final' : modeLabel(v.mode))} · ${esc(relTime(v.finished || v.created))}${v.status === 'done' ? (v.duration ? ` · ${fmtDur(v.duration)}` : '') : ` · ${esc(v.status)}`}</option>`).join('')}</select>
     <div class="doc-meta">
       ${sel.turns ? `<span><b>${sel.turns}</b> turns</span>` : ''}${sel.callouts ? `<span><b>${sel.callouts}</b> callouts</span>` : ''}
       <span><b>${(sel.referenced || []).length}/${(sel.screenshots || []).length}</b> screenshots</span>
       ${sel.doc_t_first ? `<span>covers <b>${esc(sel.doc_t_first)}–${esc(sel.doc_t_last)}</b> of ${esc(sel.t_first)}–${esc(sel.t_last)}</span>` : ''}
-      ${sel.duration ? `<span>${fmtDur(sel.duration)} to generate</span>` : ''}
+      ${sel.warning ? `<span class="doc-warn" title="${esc(sel.warning)} - see the Log">⚠ incomplete</span>` : ''}
+      ${sel.duration ? `<span>${fmtDur(sel.duration)} to generate</span>` : ''}${sel.cost ? `<span>$${(+sel.cost).toFixed(2)}</span>` : ''}
     </div>
     <div class="spacer"></div>
+    ${lastFailed && lastFailed.log_url ? `<a class="ghost-btn small" href="${esc(lastFailed.log_url)}" target="_blank" title="Log of the last run (v${lastFailed.v}, ${esc(lastFailed.status)})">v${lastFailed.v} log</a>` : ''}
+    ${sel.prompt_file_url ? `<a class="ghost-btn small" href="${esc(sel.prompt_file_url)}" target="_blank" title="The exact prompt sent for v${sel.v}">Prompt</a>` : ''}
+    ${sel.log_url ? `<a class="ghost-btn small" href="${esc(sel.log_url)}" target="_blank" title="What happened during v${sel.v}: every model call and tool call with timings">Log</a>` : ''}
     ${sel.docs_url ? `<a class="ghost-btn small" href="${esc(sel.docs_url)}" target="_blank" title="Copy saved in the project's docs/ folder">${ICON.doc}docs/ copy</a>` : ''}
     <button class="ghost-btn small" id="docReveal" title="Show this version's HTML file in its folder">${ICON.open}Open</button>`;
   $('#verSel').onchange = e => { st.docVersion = +e.target.value; renderDoc(); };
@@ -1937,6 +2159,25 @@ function renderAll() {
   renderControl(); renderTranscript(); renderShots(); renderFrames(); renderBeautify(); renderDoc(); renderChat(); renderSessionMenu();
 }
 
+// ── Batch queue: how many tasks are still in progress (badge on the Batch button) ──
+const batchStates = new Map();
+function renderBatchBadge() {
+  const n = [...batchStates.values()].filter(s => s !== 'done').length;
+  const held = [...batchStates.values()].some(s => s === 'hold');
+  const b = $('#batchBadge');
+  b.textContent = n; b.classList.toggle('hidden', !n);
+  b.title = held ? 'Some tasks are on hold' : `${n} task(s) in progress`;
+  b.style.background = held ? 'var(--warn-soft)' : ''; b.style.color = held ? 'var(--warn)' : '';
+}
+async function loadBatchCount() {
+  try {
+    const d = await api('GET', '/api/batch');
+    batchStates.clear();
+    d.tasks.forEach(t => batchStates.set(t.id, t.state));
+    renderBatchBadge();
+  } catch (_) { /* older server */ }
+}
+
 // ── WebSocket ──────────────────────────────────────────────────────────────
 let ws, wsRetry = 0;
 function connect() {
@@ -1951,6 +2192,8 @@ function connect() {
 
 async function handle(m) {
   switch (m.type) {
+    case 'batch_task': batchStates.set(m.task.id, m.task.state); renderBatchBadge(); break;
+    case 'batch_removed': batchStates.delete(m.id); renderBatchBadge(); break;
     case 'hello': {
       const wasActive = st.recorder.active;
       st.recorder = m.recorder;
@@ -1990,7 +2233,8 @@ async function handle(m) {
       st.levels.push(m.rms); st.levels.shift();
       break;
     case 'source_progress': {
-      st.recorder.source_progress = { done: m.done, total: m.total };
+      st.recorder.source_progress = { done: m.done, total: m.total, offset: m.offset, pos: m.pos, paused: m.paused };
+      mediaSync();
       const chip = $('#srcChip');
       if (chip) chip.outerHTML = sourceChip(st.recorder);
       break;
@@ -2303,6 +2547,11 @@ $('#docFrame').addEventListener('load', () => {
     await loadProjects();
     if (st.project) await selectProject(st.project);
     else renderAll();
+    // a link from the Batch page: /?project=…&session=…
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('session') && qs.get('project') === st.project) await selectSession(qs.get('session')).catch(() => {});
+    if (qs.has('project')) history.replaceState(null, '', '/');
+    loadBatchCount();
   } catch (e) { fail(e); renderAll(); }
   loadCapture();
   connect();

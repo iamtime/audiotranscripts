@@ -531,36 +531,43 @@ class LiveFrames:
     """Receives FRAME:<path> lines from screenshot_helper and triages them on a thread."""
 
     def __init__(self, out_dir: Path, session_start: datetime, on_scene=None, on_stats=None,
-                 params: Params | None = None, level1: bool = True):
+                 params: Params | None = None, level1: bool = True, drop_stale: bool = True):
         self.session_start = session_start
         self.store = SceneStore(out_dir, session_start)
         self.triage = FrameTriage(self.store, params, filters=level1_filters(level1),
                                   on_scene=on_scene, on_stats=on_stats)
         self.q: queue.Queue = queue.Queue()
+        self.drop_stale = drop_stale   # live capture: skip frames when behind; a file's frames are paced instead
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
-    def put(self, path: str):
-        self.q.put((time.time(), path))
+    def put(self, path: str, t: float | None = None):
+        """A frame file; *t* = seconds since the session start (default: now)."""
+        self.q.put((time.time() - self.session_start.timestamp() if t is None else t, path))
 
     def _loop(self):
         while True:
             item = self.q.get()
             if item is None:
                 break
-            ts, path = item
+            t, path = item
             # Falling behind (e.g. CPU busy with ASR): skip stale frames, keep the newest.
-            if self.q.qsize() > 3:
+            if self.drop_stale and self.q.qsize() > 3:
                 try:
                     os.unlink(path)
                 except OSError:
                     pass
                 continue
-            t = ts - self.session_start.timestamp()
             try:
                 self.triage.feed(t, path=path)
             except Exception as e:
                 print(f"[frames] triage error: {e}", file=sys.stderr)
+
+    def wait_ready(self, timeout: float = 300) -> None:
+        """Wait for the Level-1 model (a file's frames can wait; live ones pass through meanwhile)."""
+        for f in self.triage.filters:
+            if hasattr(f, "ready"):
+                f.ready.wait(timeout)
 
     def close(self):
         self.q.put(None)

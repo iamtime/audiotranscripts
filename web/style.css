@@ -70,7 +70,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 *::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
 *::-webkit-scrollbar-track { background: transparent; }
 
-.app { display: grid; grid-template-rows: auto auto 1fr auto; grid-template-columns: minmax(0, 1fr); height: 100vh; }
+.app { display: grid; grid-template-rows: auto auto auto 1fr auto; grid-template-columns: minmax(0, 1fr); height: 100vh; }
 .app > * { min-width: 0; }
 
 /* ── Top bar ──────────────────────────────────────────────────────────────── */
@@ -106,7 +106,32 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .mi-ai { border-top: 1px solid var(--line); margin-top: 4px; }
 .settings-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; font-size: 13px; font-weight: 560; }
 .settings-btn .ico { width: 16px; height: 16px; }
+.batch-btn { text-decoration: none; color: inherit; }
+.batch-btn .ico { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .icon-btn:hover { background: var(--panel-2); color: var(--ink); }
+
+/* ── Media panel (audio / video file source) ──────────────────────────────── */
+.media-panel { display: flex; gap: 18px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel-2); align-items: stretch; }
+/* stays a grid row (.app rows are fixed) - just takes no space */
+.media-panel.off { display: block; height: 0; padding: 0; border: 0; overflow: hidden; }
+.media-panel video { width: 320px; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; flex: none; object-fit: contain; }
+.media-panel.audio video { width: 320px; height: 40px; aspect-ratio: auto; background: transparent; }
+.media-panel.live video { pointer-events: none; }
+.media-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; justify-content: center; }
+.m-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.m-title b { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-track { position: relative; height: 26px; cursor: pointer; }
+.m-track::before { content: ""; position: absolute; left: 0; right: 0; top: 11px; height: 4px; border-radius: 2px; background: var(--line-strong); }
+.m-range { position: absolute; top: 9px; height: 8px; border-radius: 4px; background: var(--accent-soft); border: 1px solid var(--accent); box-sizing: border-box; }
+.m-done { position: absolute; top: 9px; height: 8px; border-radius: 4px; background: var(--accent); }
+.m-mark { position: absolute; top: 3px; width: 2px; height: 20px; margin-left: -1px; background: var(--accent); border-radius: 1px; }
+.m-head { position: absolute; top: 2px; width: 12px; height: 22px; margin-left: -6px; border-radius: 4px; background: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.live .m-track { cursor: default; }
+.m-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.m-ctl .field.m-time { width: 84px; text-align: center; font-variant-numeric: tabular-nums; }
+.m-ctl .m-now { font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; min-width: 64px; }
+.m-ctl .sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+@media (max-width: 760px) { .media-panel { flex-direction: column; } .media-panel video { width: 100%; } }
 
 /* ── Control strip ────────────────────────────────────────────────────────── */
 .control {
@@ -167,7 +192,7 @@ select.field { padding-right: 26px; appearance: none; background-image: url("dat
 .a-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .a-dot.speech { background: var(--ok); box-shadow: 0 0 0 4px var(--ok-soft); }
 .a-dot.transcribing { background: var(--accent); animation: pulse 1s infinite; }
-.chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: .03em; }
+.chip { white-space: nowrap; display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: .03em; }
 .ghost-btn {
   display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 13px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--panel-2); font-weight: 540; transition: border-color .15s, background .15s;
@@ -267,8 +292,12 @@ select.field { padding-right: 26px; appearance: none; background-image: url("dat
 /* ── Beautified tab ───────────────────────────────────────────────────────── */
 .doc-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .doc-toolbar:empty { display: none; }
+.doc-toolbar .ver-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin-right: -4px; }
+.doc-toolbar a.ghost-btn { text-decoration: none; color: inherit; }
+.jc-sub a { color: var(--accent); }
 .doc-meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 12px; flex-wrap: wrap; }
 .doc-meta b { color: var(--ink); font-weight: 600; }
+.doc-meta .doc-warn { color: var(--warn); font-weight: 600; cursor: help; }
 .doc-frame-wrap { flex: 1; min-height: 0; position: relative; }
 .doc-frame-wrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
 .job-card { margin: 14px 14px 0; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: linear-gradient(180deg, color-mix(in srgb, var(--ai-1) 7%, var(--panel)), var(--panel)); }
@@ -571,7 +600,7 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .a-dot.paused { background: var(--warn); }
 
 /* ── Auto frames ─────────────────────────────────────────────────────────── */
-.auto-btn { gap: 8px; }
+.auto-btn { gap: 8px; white-space: nowrap; }
 .auto-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
 .auto-btn.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent); font-weight: 620; }
 .auto-btn.on .auto-dot, .auto-dot.live { background: var(--accent); animation: autoPulse 1s ease-in-out infinite; }

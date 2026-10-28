@@ -158,8 +158,10 @@ def _kwargs(cfg: dict) -> dict:
     return {"max_tokens": MAX_OUTPUT} if cfg["provider"] == "anthropic" else {}
 
 
-def stream(cfg: dict, messages: list[dict], on_delta=None) -> str:
-    """Run a chat completion, streaming; returns the whole reply."""
+def stream(cfg: dict, messages: list[dict], on_delta=None, on_reasoning=None, info: dict | None = None) -> str:
+    """Run a chat completion, streaming; returns the whole reply. on_reasoning(text) gets the
+    model's thinking, where the provider streams it (DeepSeek, OpenRouter, …). info, if given,
+    gets "finish_reason" ("length" = the reply was cut off at the output limit)."""
     why = problem(cfg)
     if why:
         raise RuntimeError(why)
@@ -170,7 +172,14 @@ def stream(cfg: dict, messages: list[dict], on_delta=None) -> str:
         if not getattr(chunk, "choices", None):
             continue
         answered = True
-        d = chunk.choices[0].delta.content or ""
+        if info is not None and getattr(chunk.choices[0], "finish_reason", None):
+            info["finish_reason"] = chunk.choices[0].finish_reason
+        delta = chunk.choices[0].delta
+        if on_reasoning:
+            r = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            if isinstance(r, str) and r:
+                on_reasoning(r)
+        d = delta.content or ""
         if d:
             parts.append(d)
             if on_delta:

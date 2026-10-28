@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ushi · Batch</title>
+<link rel="icon" type="image/png" href="/static/img/favicon.png">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/batch.css">
+</head>
+<body class="batch-page">
+<header class="topbar">
+  <a class="brand" href="/" title="Main window"><img class="logo" src="/static/img/ushi-logo.png" alt=""><span class="brand-name">ushi</span></a>
+  <div class="b-title">Batch <span class="b-sub">YouTube → download → transcribe → beautify</span></div>
+  <div class="top-actions">
+    <label class="b-par" title="How many videos download at once. Transcription and Beautify always run one at a time.">
+      <span class="opt-label">Downloads at once</span>
+      <input class="field num" id="parInp" type="number" min="1" max="10" value="3">
+    </label>
+    <button class="icon-btn" id="themeBtn" title="Toggle theme"><svg viewBox="0 0 20 20" class="ico"><path d="M10 3a7 7 0 1 0 7 7 5.5 5.5 0 0 1-7-7z"/></svg></button>
+    <a class="ghost-btn settings-btn" href="/" id="mainLink" title="The main window: the transcription that is running shows there live">Main window</a>
+  </div>
+</header>
+
+<main class="b-main">
+  <section class="panel b-add" id="addPanel"></section>
+  <section class="b-queue">
+    <div class="b-queue-head">
+      <h2>Queue</h2>
+      <div class="b-summary" id="summary"></div>
+      <div class="spacer"></div>
+      <button class="ghost-btn small hidden" id="clearDone" title="Remove finished tasks from the list (their projects stay)">Clear finished</button>
+    </div>
+    <div class="b-warn hidden" id="ytdlpWarn">yt-dlp is not installed, downloads will be put on hold: <span class="mono">pip install yt-dlp</span> or <span class="mono">brew install yt-dlp</span></div>
+    <div class="b-list" id="list"></div>
+  </section>
+</main>
+<div class="toasts" id="toasts"></div>
+<script src="/static/batch.js"></script>
+</body>
+</html>

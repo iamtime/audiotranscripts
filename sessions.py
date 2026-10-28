@@ -49,6 +49,7 @@ DEFAULT_SETTINGS = {
     "recorder_python": "",            # empty = same interpreter as server.py
     "device": "auto",                 # Whisper / speaker model: auto (cuda when available) | cpu | cuda
     "last_project": "",
+    "batch_parallel": 3,              # batch queue: YouTube downloads at once
 }
 
 DEFAULT_PROJECT_SETTINGS = {
@@ -469,11 +470,24 @@ def frame_groups(scenes: list[dict]) -> list[dict]:
     return list(groups.values())
 
 
-def beautify_text(project: str, sid: str) -> str:
+def visible_frames(project: str, sid: str) -> list[dict]:
+    """Auto frames not hidden in the UI, in time order: {id, path, time, title}."""
+    hidden = set(load_visibility(project, sid)["frames"])
+    out = []
+    for g in sorted(frame_groups(load_scenes(project, sid)), key=lambda g: g["wall_start"]):
+        path = g.get("last_path") or g["path"]
+        if g["id"] in hidden or not Path(path).exists():
+            continue
+        out.append({"id": g["id"], "path": path, "time": g["wall_start"][11:19],
+                    "title": g.get("title") or g.get("caption") or ""})
+    return out
+
+
+def beautify_text(project: str, sid: str, frames: bool = True) -> str:
     """The transcript as Beautify should see it: hidden lines and screenshots removed,
-    visible auto frames inserted as "[HH:MM:SS] [screenshot: path]" at their time."""
+    visible auto frames (unless frames=False) inserted as "[HH:MM:SS] [screenshot: path]" at their time."""
     vis = load_visibility(project, sid)
-    hidden_lines, hidden_shots, hidden_frames = set(vis["lines"]), set(vis["shots"]), set(vis["frames"])
+    hidden_lines, hidden_shots = set(vis["lines"]), set(vis["shots"])
     blocks: list[tuple[str, str]] = []   # (time, text incl. continuation lines)
     for raw in read_transcript(project, sid).splitlines():
         m = LINE_RE.match(raw)
@@ -488,13 +502,8 @@ def beautify_text(project: str, sid: str) -> str:
         if e and (e["key"] in hidden_lines or (e["kind"] == "screenshot" and e["key"] in hidden_shots)):
             continue
         kept.append((t, text))
-    for g in sorted(frame_groups(load_scenes(project, sid)), key=lambda g: g["wall_start"], reverse=True):
-        if g["id"] in hidden_frames:
-            continue
-        path = g.get("last_path") or g["path"]
-        if not Path(path).exists():
-            continue
-        t = g["wall_start"][11:19]
+    for f in reversed(visible_frames(project, sid) if frames else []):
+        t, path = f["time"], f["path"]
         pos = next((i for i, (bt, _) in enumerate(kept) if bt > t), len(kept))
         kept.insert(pos, (t, f"[{t}] [screenshot: {path}]"))
     return "".join(text + "\n" for _, text in kept)
@@ -540,5 +549,9 @@ def public_manifest(project: str, sid: str, manifest: dict) -> dict:
             v["url"] = file_url(session_dir(project, sid) / v["html"])
         if v.get("docs_copy"):
             v["docs_url"] = file_url(v["docs_copy"])
+        for k in ("log", "prompt_file"):
+            if v.get(k) and (session_dir(project, sid) / v[k]).exists():
+                v[k + "_url"] = file_url(session_dir(project, sid) / v[k])
+        v["frame_count"] = len(v.pop("frames", None) or [])   # the list is for insert_frames only
         versions.append(v)
     return {"versions": versions}

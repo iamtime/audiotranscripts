@@ -168,7 +168,26 @@ python main.py myproject 60 --source app:com.microsoft.teams2
 # An audio file (mp3, m4a, wav, video, ...; ffmpeg, or afconvert as a fallback);
 # timestamps are positions in the file, no screenshots
 python main.py myproject 60 --source file:meeting.m4a
+
+# A video file, only 1:00-3:00, frames taken straight from the video (full resolution);
+# as fast as the recognizer goes. Timestamps (transcript, frames) stay positions in the file.
+python main.py myproject 60 --source file:talk.mp4 --start 1:00 --end 3:00 --auto-frames 1
+
+# The same at playback speed, watching along in an ffplay window:
+# Ctrl+Shift+S saves the video frame at the current position (not a screenshot)
+python main.py myproject 60 --source file:talk.mp4 --start 1:00 --realtime --play
 ```
+
+Batch: a queue of YouTube videos, each downloaded (yt-dlp, 3 at once), transcribed (one at a time, in the order the downloads finish) and optionally beautified (one at a time), each in its own project. The video's default subtitles (author-uploaded, else YouTube's captions in the original language) go into the project's external transcripts (Notes), bound to the session, and Beautify uses them. A failed or interrupted stage puts its task on hold with the reason; restarting it continues an interrupted transcription where it stopped. The web UI has it under **Batch** (`/batch`); from the console:
+
+```bash
+# tasks.csv: url[,project[,auto_frames[,beautify]]]  (header optional; project = YouTube id, flags = 1 by default)
+python batch.py run tasks.csv [--parallel 3]   # standalone; state in tasks.csv.state.json - run again to resume
+python batch.py submit tasks.csv               # into the running web UI's queue
+python batch.py list                           # the web UI's queue
+```
+
+A file run ends with `Processed 00:01:00 - 00:02:20 (stopped early; resume with --start 140.7)` (and a `source_done` event), so an interrupted run can be picked up from there. With `--control-stdin`, `MUTE` / `UNMUTE` pause and resume reading the file, and `SNAP [<sec>]` saves the video frame at `<sec>` (default: the current position). In the web UI these are the **Audio file**, **Video file (real-time player)** and **Video file (background)** sources: the player under the control strip sets the range (**Set start** / **Set end**), and in real-time mode plays in step with the recognizer.
 
 `audio_helper` writes 16 kHz mono float32 to stdout, paced by the wall clock (zeros while the app is silent), so both channels share one timeline. Each channel has its own VAD. With `--speakers`, only `[Them]` lines are diarized. macOS asks for the *System Audio Recording* permission. Teams plays call audio from its `ModuleHost` helper process, which is grouped under the app. The web UI also has a **Cut** button that ends the current phrase without waiting for the pause (`CUT` on `--control-stdin`).
 

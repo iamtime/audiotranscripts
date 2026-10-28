@@ -10,8 +10,8 @@ the scene was on screen. Per scene (revisits of the same image are pooled) we co
 and keep the top N. Planned next: OCR-word overlap with the speech (Level 2) and a final
 pick by a text LLM given the transcript + scene list.
 
-Every visible frame goes to Beautify as a screenshot at its own time (sessions.beautify_text);
-picking hides the frames that didn't make it (sessions/<sid>/visibility.json), and any of them
+Every visible frame goes into the Beautify document at its own time (beautify.insert_frames);
+picking (only when the user asks for it) hides the frames that didn't make it (sessions/<sid>/visibility.json), and any of them
 can be shown again with the eye button in the UI.
 
   python select_frames.py <project> <sid> [-n 10] [--apply]
@@ -153,16 +153,6 @@ def select(project: str, sid: str, n: int = 10, apply: bool = True) -> dict:
         vis["frames"] = [r["id"] for r in rows if not r["selected"]]
         S.save_visibility(project, sid, vis)
     return result
-
-
-def auto_select(project: str, sid: str, n: int = 10) -> bool:
-    """Pick before the final Beautify unless the user already did: no Pick run and no frame
-    hidden by hand. Otherwise every auto frame would go into the document."""
-    if not S.load_scenes(project, sid) or (frames_dir(project, sid) / "selection.json").exists() \
-            or S.load_visibility(project, sid)["frames"]:
-        return False
-    select(project, sid, n)
-    return True
 
 
 def frames_payload(project: str, sid: str) -> dict:
