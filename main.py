@@ -63,6 +63,7 @@ embed_queue: queue.Queue = queue.Queue()            # items: (t_start, t_end, au
 stop_event = threading.Event()
 screenshot_dir: Path | None = None
 ocr_queue: queue.Queue[str] = queue.Queue()
+frame_ocr_queue: queue.Queue = queue.Queue()   # (path, frame id): after the screenshots
 pending_injections: queue.Queue = queue.Queue()     # marker, or (t_relative, marker) for a known time
 audio_chunks: list[np.ndarray] = []
 app_chunks: list[np.ndarray] = []     # app channel in app+mic mode (mixed in when saving audio)
@@ -874,7 +875,9 @@ def _cpu_lacks_avx2() -> bool:
 
 
 def ocr_worker():
-    """Daemon thread: OCR screenshots and save text to .txt files."""
+    """Daemon thread: OCR screenshots and auto frames, save the text next to each image (.txt).
+    Screenshots go first; frames when there is no screenshot waiting. On the sentinel the
+    frames still waiting are done too, so every frame of the session has its text."""
     try:
         with downloads.watch_easyocr():
             reader = easyocr.Reader(["ru", "en"], gpu=False, verbose=False, quantize=not _cpu_lacks_avx2())
@@ -882,15 +885,26 @@ def ocr_worker():
         print(f"[OCR] disabled, model failed to load: {e}", file=sys.stderr)
         events.emit("error", where="OCR", message=f"screenshot text recognition is off: {downloads._explain(e)}")
         reader = None
+    stopping = False
     while True:
+        frame_id = None
         try:
-            image_path = ocr_queue.get(timeout=0.5)
+            q, image_path = ocr_queue, ocr_queue.get(timeout=0 if stopping or not frame_ocr_queue.empty() else 0.5)
         except queue.Empty:
-            continue
+            try:
+                q, (image_path, frame_id) = frame_ocr_queue, frame_ocr_queue.get_nowait()
+            except queue.Empty:
+                if stopping:
+                    ocr_queue.task_done()    # the sentinel's
+                    break
+                continue
 
-        if image_path is None:  # sentinel → exit
-            ocr_queue.task_done()
-            break
+        if image_path is None:  # sentinel → finish the frames, then exit
+            stopping = True
+            left = frame_ocr_queue.qsize()
+            if left:
+                events.emit("status", state="finalizing", detail=f"Reading text on {left} auto frame(s)")
+            continue
 
         try:
             if not Path(image_path).exists():
@@ -903,14 +917,19 @@ def ocr_worker():
             txt_path = Path(image_path).with_suffix(".txt")
             txt_path.write_text(text, encoding="utf-8")
             time_str = datetime.now().strftime("%H:%M:%S")
-            sys.stdout.write(f"\r\033[K[{time_str}] [OCR done: {txt_path.name}]\n")
-            sys.stdout.flush()
-            events.emit("ocr", path=image_path, txt=str(txt_path), chars=len(text))
+            if frame_id is None:
+                sys.stdout.write(f"\r\033[K[{time_str}] [OCR done: {txt_path.name}]\n")
+                sys.stdout.flush()
+            if frame_id is None:
+                events.emit("ocr", path=image_path, txt=str(txt_path), chars=len(text))
+            else:
+                events.emit("frame_ocr", id=frame_id, path=image_path, chars=len(text))
         except Exception as e:
             print(f"[OCR error] {e}", file=sys.stderr)
-            events.emit("ocr_error", path=image_path, message=str(e))
+            events.emit("ocr_error" if frame_id is None else "frame_ocr_error", path=image_path,
+                        id=frame_id, message=str(e))
         finally:
-            ocr_queue.task_done()
+            q.task_done()
 
 
 def helper_reader(proc):
@@ -957,6 +976,9 @@ def start_live_frames(frames_dir: Path, session_start: datetime, level1: bool = 
                      "drift": f"frame #{scene.id} updated"}[kind]
             sys.stdout.write(f"\r\033[K[{wall}] [{label}]\n")
             sys.stdout.flush()
+        if kind == "new" or kind == "drift":
+            # The text on screen, like a screenshot's (for a drifted scene: its latest state)
+            frame_ocr_queue.put((scene.last_path if kind == "drift" and scene.last_path else scene.path, scene.id))
         events.emit("frame_scene", kind=kind, id=scene.id, path=scene.path, last_path=scene.last_path,
                     same_as=scene.same_as, scroll_of=scene.scroll_of, t_start=round(scene.t_start, 2),
                     t_end=round(scene.t_end, 2), wall_start=scene.wall_start, wall_end=scene.wall_end,

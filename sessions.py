@@ -52,6 +52,8 @@ DEFAULT_SETTINGS = {
     "device": "auto",                 # Whisper / speaker model: auto (cuda when available) | cpu | cuda
     "last_project": "",
     "batch_parallel": 3,              # batch queue: YouTube downloads at once
+    "vision_provider": "",            # Describe (image_notes.py): openai | gemini | anthropic | openrouter; empty = auto
+    "vision_model": "",               # empty = the provider's default vision model
 }
 
 DEFAULT_PROJECT_SETTINGS = {
@@ -361,6 +363,7 @@ def screenshot_info(path: str, manifest: dict | None = None) -> dict:
         "logged": True,
         "ocr": txt.exists(),
         "ocr_chars": txt.stat().st_size if txt.exists() else 0,
+        "described": p.with_suffix(".desc.md").exists(),
         "beautified": None,     # version number that included it
         "in_doc": False,        # referenced by that version's HTML
     }
@@ -475,7 +478,8 @@ def frame_groups(scenes: list[dict]) -> list[dict]:
 
 
 def visible_frames(project: str, sid: str) -> list[dict]:
-    """Auto frames not hidden in the UI, in time order: {id, path, time, title}."""
+    """Auto frames not hidden in the UI, in time order: {id, path, time, title, first_path}
+    (path = the state shown last)."""
     hidden = set(load_visibility(project, sid)["frames"])
     out = []
     for g in sorted(frame_groups(load_scenes(project, sid)), key=lambda g: g["wall_start"]):
@@ -483,7 +487,7 @@ def visible_frames(project: str, sid: str) -> list[dict]:
         if g["id"] in hidden or not Path(path).exists():
             continue
         out.append({"id": g["id"], "path": path, "time": g["wall_start"][11:19],
-                    "title": g.get("title") or g.get("caption") or ""})
+                    "title": g.get("title") or g.get("caption") or "", "first_path": g["path"]})
     return out
 
 

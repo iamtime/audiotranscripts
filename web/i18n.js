@@ -267,6 +267,20 @@
         'Screenshot deleted': 'Скриншот удалён',
         'kept in screenshots/.trash': 'сохранён в screenshots/.trash',
         'Find in transcript': 'Найти в транскрипте',
+        'Describe': 'Описать',
+        'Describing…': 'Описываю…',
+        'Described': 'Описан',
+        'described': 'описан',
+        'Describe: a vision model writes what is on this image; Beautify uses it instead of the OCR text': 'Описать: визуальная модель опишет, что на картинке; при оформлении это описание заменит текст OCR',
+        'Described · click to describe again': 'Описан · нажмите, чтобы описать заново',
+        'Described · Beautify will use it instead of the OCR text': 'Описано · при оформлении будет использовано вместо текста OCR',
+        'Described by the vision model: Beautify uses it instead of the OCR text': 'Описан визуальной моделью: при оформлении используется вместо текста OCR',
+        'The text on it is recognized (OCR)': 'Текст на нём распознан (OCR)',
+        'OCR is not ready yet.': 'OCR ещё не готов.',
+        'Screen descriptions': 'Описания экрана',
+        'Vision model': 'Визуальная модель',
+        'The Describe button next to each screenshot and auto frame sends the image to this model. The same key is used if you pick this provider for Beautify.': 'Кнопка «Описать» у каждого скриншота и автокадра отправляет картинку этой модели. Если выбрать этого провайдера для оформления, будет использован тот же ключ.',
+        'Screen notes failed: using the screenshots\' OCR text (see Log)': 'Заметки об экране не получились: используется OCR скриншотов (см. лог)',
         'Loading OCR text…': 'Загрузка текста OCR…',
         'Click again to delete': 'Нажмите ещё раз для удаления',
         '(no text recognized)': '(текст не распознан)',
@@ -514,6 +528,9 @@
         'Starting recognizer': 'Запуск распознавателя',
         'Starting capture': 'Запуск записи',
         "Show this version's HTML file in its folder": 'Показать HTML-файл этой версии в папке',
+        'Embed images': 'Встроить картинки',
+        'Save this version as one HTML file with the images embedded (vN-emb.html), to share without the image folders':
+          'Сохранить эту версию одним HTML-файлом со встроенными картинками (vN-emb.html), чтобы делиться без папок с картинками',
         'Models loaded': 'Модели загружены',
         'Ready to record': 'Можно начинать запись',
         'Models are loaded · recording starts when you press Start': 'Модели загружены · запись начнётся, когда нажмёте «Начать запись»',
@@ -593,8 +610,11 @@
       // Strings with numbers / names. Tried in order after an exact match fails; a capture group
       // that holds a name, file or quote is passed through untouched.
       patterns: [
+        [/^Condensing what was on screen \((\d+) images\)$/, (n) => `Сжимаю заметки о том, что было на экране (${cnt(n, 'картинка', 'картинки', 'картинок')})`],
+        [/^Screen notes: (\d+) images → ([\d,]+) characters$/, (n, c) => `Заметки об экране: ${cnt(n, 'картинка', 'картинки', 'картинок')} → ${c} символов`],
         // numbers with units
         [/^(\d+(?:\.\d+)?) s$/, '$1 с'],
+        [/^Saved (v\d+-emb\.html) \((\d+(?:\.\d+)?) MB\)$/, 'Сохранено: $1 ($2 МБ)'],
         [/^(\d+)m (\d+)s$/, '$1 мин $2 с'],
         [/^(\d+)s$/, '$1 с'],
         [/^(\d+) min ago$/, '$1 мин назад'],

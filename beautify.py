@@ -29,7 +29,9 @@ from pathlib import Path
 import claude_cli
 import llm_api
 import external
+import image_notes
 import select_frames
+import sessions as S
 from sessions import (
     DATA_ROOT, ROOT, beautify_text, frames_dir, latest_version, load_manifest, load_notes, load_project_settings, load_settings, notes_path,
     parse_transcript, project_dir, save_manifest, session_dir, shot_time,
@@ -378,7 +380,67 @@ def prepare(project: str, sid: str, mode: str = "update", live: bool = False) ->
         "log": sdir / record["log"], "frame_count": len(frames),
         "ext_files": ext_files, "yt_sources": {str(p): v for p, v in yt_src.items()}, "shot_count": len(shots), "lines": len(timed), "t_last": t_last,
         "shots": [{**x, "src": _rel(Path(x["path"]), sdir)} for x in shots],
+        "image_items": image_notes.index_items(shots, frames),
     }
+
+
+SCREEN_NOTES_BLOCK = """
+## What was on screen
+Notes made from the screenshots and auto frames (their descriptions or OCR, boilerplate removed), by time. \
+Use them to spell names and terms right and to know what the speakers were looking at; they are not speech.
+{notes}
+"""
+
+
+def _ask_claude(prompt: str, model: str) -> str:
+    """One text reply from Claude Code, no tools."""
+    exe = claude_cli.claude_binary()
+    if not exe:
+        raise RuntimeError("Claude Code CLI ('claude') not found in PATH")
+    r = subprocess.run([exe, "-p", "--output-format", "text", "--model", model or "sonnet", "--tools", ""],
+                       input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       cwd=str(DATA_ROOT), timeout=900)
+    if r.returncode != 0 or not r.stdout.strip():
+        raise RuntimeError((r.stderr or r.stdout).strip()[-300:] or f"claude exit code {r.returncode}")
+    return r.stdout
+
+
+def screen_notes(spec: dict, log: "RunLog | None" = None) -> str:
+    """Condense what the session's images show (image_notes.condense) with the Beautify engine.
+    Saved as vN.screen.txt and kept in spec["screen_notes"]; the same image texts are not
+    condensed twice (screen_notes.json in the session folder). '' when there is nothing or it fails."""
+    items = spec.get("image_items") or []
+    spec["screen_notes"] = ""
+    if not items:
+        return ""
+    sdir = Path(spec["out"]).parent
+    cache_path = sdir / "screen_notes.json"
+    key = image_notes.index_key(items)
+    cache = S._read_json(cache_path, {})
+    write = log.write if log else (lambda _t: None)
+    notes = cache.get(key, "")
+    if notes:
+        write(f"Screen notes: {len(items)} images, unchanged since the last run (reused)")
+    else:
+        settings = spec["settings"]
+        if settings["beautify_engine"] == "api":
+            cfg = llm_api.config(settings)
+            ask = lambda prompt: llm_api.stream(cfg, [{"role": "user", "content": prompt}])
+        else:
+            ask = lambda prompt: _ask_claude(prompt, settings.get("beautify_model"))
+        started = time.time()
+        try:
+            notes = image_notes.condense(items, ask, write)
+        except Exception as e:
+            write(f"Screen notes failed, the raw OCR text is used instead: {llm_api.explain(e)}")
+            return ""
+        write(f"Screen notes: {len(items)} images → {len(notes):,} chars in {time.time() - started:.0f}s")
+        S._write_json(cache_path, {key: notes})
+    (sdir / f"v{spec['v']}.screen.txt").write_text(notes, encoding="utf-8")
+    spec["screen_notes"] = notes
+    if notes and spec["settings"]["beautify_engine"] != "api":
+        spec["prompt"] += fill(SCREEN_NOTES_BLOCK, notes=notes)
+    return notes
 
 
 def claude_command(spec: dict) -> list[str]:
@@ -695,6 +757,17 @@ def _find_image(src: str, base: Path, project: str, sid: str) -> Path | None:
         if (d / name).is_file():
             return d / name
     return next(project_dir(project).glob(f"frames/*/{name}"), None)
+
+
+def embed_version(project: str, sid: str, v: int) -> Path:
+    """sessions/<sid>/vN.html → vN-emb.html next to it, with every image embedded as a data:
+    URI: one file that opens anywhere, to share without the screenshots/ and frames/ folders."""
+    src = session_dir(project, sid) / f"v{int(v)}.html"
+    if not src.is_file():
+        raise FileNotFoundError(f"No v{v} in session {sid}")
+    out = src.with_name(f"v{int(v)}-emb.html")
+    out.write_text(_embed_images(src.read_text(encoding="utf-8"), src.parent, project, sid), encoding="utf-8")
+    return out
 
 
 def _embed_images(html: str, base: Path, project: str, sid: str) -> str:
@@ -1250,10 +1323,14 @@ def run_api(spec: dict, on_progress=None, log: RunLog | None = None) -> dict:
         shots = [x for x in spec["shots"] if whole or t_from <= x["time"] <= t_to]
         srcs = "".join(f"  {x['time']}  {Path(x['path']).name}  → src=\"{x['src']}\"\n" for x in shots)
         ocr = []
-        for x in shots:
-            txt = Path(x["path"]).with_suffix(".txt")
-            if txt.exists():
-                ocr.append(f"--- {Path(x['path']).name} ---\n{txt.read_text(encoding='utf-8', errors='replace')}")
+        notes = spec.get("screen_notes", "")
+        if notes:
+            notes = notes if whole else image_notes.notes_between(notes, t_from, t_to)
+        else:     # no condensed notes: the screenshots' own OCR text
+            for x in shots:
+                txt = Path(x["path"]).with_suffix(".txt")
+                if txt.exists():
+                    ocr.append(f"--- {Path(x['path']).name} ---\n{txt.read_text(encoding='utf-8', errors='replace')}")
         ext = ""
         for p, body in exts:
             src = yt.get(str(p))
@@ -1262,7 +1339,10 @@ def run_api(spec: dict, on_progress=None, log: RunLog | None = None) -> dict:
                 ext += (f"--- {p.name} ({EXT_KIND.get(src, EXT_KIND[None])})"
                         + ("" if whole else ", only the piece around this part") + f" ---\n{piece}\n")
         return (f"## SCREENSHOTS (time, file, src)\n{srcs or '(none)'}\n"
-                f"## SCREENSHOT OCR\n" + ("\n\n".join(ocr) or "(none)") + f"\n\n## RAW TRANSCRIPT\n{part_text}\n"
+                + (f"## WHAT WAS ON SCREEN (notes from the screenshots and auto frames, by time; not speech)\n"
+                   f"{notes or '(nothing in this part)'}\n\n"
+                   if spec.get("screen_notes") else "## SCREENSHOT OCR\n" + ("\n\n".join(ocr) or "(none)") + "\n\n")
+                + f"## RAW TRANSCRIPT\n{part_text}\n"
                 + (f"\n## EXTERNAL TRANSCRIPTS (how to use each is in its heading; keep OUR times)\n{ext}" if ext else ""))
 
     def title_of(body: str) -> tuple[str, str]:
@@ -1376,12 +1456,18 @@ def main():
     ap.add_argument("--model", default=None, help="Claude model alias (default from settings: opus)")
     ap.add_argument("--layout", choices=["model", "app"], default=None,
                     help="API engine: who builds the frame (default from settings)")
+    ap.add_argument("--embed", type=int, metavar="N",
+                    help="Don't beautify: save vN.html as vN-emb.html with the images embedded, to share as one file")
     args = ap.parse_args()
 
     sid = args.sid
     if sid == "latest":
         from sessions import list_sessions
         sid = list_sessions(args.project)[0]["sid"]
+    if args.embed is not None:
+        out = embed_version(args.project, sid, args.embed)
+        print(f"{out}  ({out.stat().st_size / 1e6:.1f} MB)")
+        return
     spec = prepare(args.project, sid, args.mode)
     if args.model:
         spec["settings"]["beautify_model"] = args.model
@@ -1392,6 +1478,7 @@ def main():
 
     log = RunLog(spec["log"])
     print(f"Log: {spec['log']}")
+    screen_notes(spec, log)
     if spec["settings"]["beautify_engine"] == "api":
         log.header(spec, "api", llm_api.config(spec["settings"])["model"])
         try:

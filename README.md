@@ -221,6 +221,7 @@ VOICE_REC_PYTHON=/path/to/python ./webui.sh --port 9000 --no-browser
   - *Update* (default) extends the previous version with the new material.
   - *Full rebuild* regenerates the whole document.
   - *Final* runs automatically when recording stops. It uses the diarized transcript and is also copied to `docs/`.
+  - **Embed images** (next to *Open*) saves the shown version as `vN-emb.html` with every image embedded as a `data:` URI: one file that opens anywhere, to share without the `screenshots/` and `frames/` folders.
 - **Ask**: chat about the transcript (live or saved) while recording keeps running. It follows up with only the new lines.
 - **Notes**: one file per project, `projects/<name>/notes.md`, sent with every Beautify and Ask request as authoritative context: who's who, the client, terms that are often misheard. Edits are saved as you type.
 - **AI**: Beautify and Ask run through Claude Code, or through an LLM API (Settings → AI): Gemini, OpenAI, Anthropic, OpenRouter, a local model in **Ollama** or **LM Studio** (no key; *Test* lists the installed models), or any OpenAI-compatible host (vLLM, llama.cpp server, a gateway).
@@ -243,6 +244,7 @@ Beautify also works from the console:
 
 ```bash
 python beautify.py myproject 20260928_110051 --mode full     # or: latest, --mode final
+python beautify.py myproject 20260928_110051 --embed 3        # v3.html → v3-emb.html, images embedded (one file to share)
 ```
 
 Files: versions in `projects/<p>/sessions/<sid>/vN.html` (+ `manifest.json`, transcript snapshots, `chat.json`, `events.jsonl`); notes in `projects/<p>/notes.md`; external transcripts in `projects/<p>/external/`; UI state in `.webui/`.

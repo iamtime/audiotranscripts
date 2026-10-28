@@ -40,6 +40,7 @@ import claude_cli
 import downloads
 import llm_api
 import external
+import image_notes
 import native_helpers
 import select_frames as SF
 import sessions as S
@@ -507,6 +508,10 @@ class Recorder:
             scene["url"] = S.file_url(ev["path"])
             scene["last_url"] = S.file_url(ev["last_path"]) if ev.get("last_path") else None
             hub.emit({"type": "frame", "project": self.project, "sid": self.sid, "scene": scene})
+        elif t in ("frame_ocr", "frame_ocr_error"):
+            if ev.get("id") is not None:
+                hub.emit({"type": "frame", "project": self.project, "sid": self.sid,
+                          "scene": {"id": ev["id"], "ocr_ready": t == "frame_ocr"}})
         elif t == "frame_stats":
             self.frame_stats = {k: v for k, v in ev.items() if k not in ("type", "ts")}
             hub.emit({"type": "frame_stats", "project": self.project, "sid": self.sid, **self.frame_stats})
@@ -613,6 +618,16 @@ class BeautifyJobs:
         asyncio.get_running_loop().create_task(self._run(job))
         return self.public(job)
 
+    async def _screen_notes(self, job: dict, spec: dict, log):
+        n = len(spec.get("image_items") or [])
+        if not n:
+            return
+        self.step(job, f"Condensing what was on screen ({n} images)")
+        notes = await asyncio.to_thread(beautify.screen_notes, spec, log)
+        job["steps"][-1]["text"] = (f"Screen notes: {n} images → {len(notes):,} characters" if notes
+                                    else "Screen notes failed: using the screenshots' OCR text (see Log)")
+        self.broadcast(job)
+
     def step(self, job: dict, text: str, replace_last_tool: str | None = None):
         t = round(time.time() - job["started"], 1)
         if replace_last_tool and job["steps"] and job["steps"][-1].get("tool") == replace_last_tool \
@@ -643,6 +658,7 @@ class BeautifyJobs:
             if spec["settings"]["beautify_engine"] == "api":
                 spec["cancel"] = threading.Event()
                 log.header(spec, "api", llm_api.config(spec["settings"])["model"])
+                await self._screen_notes(job, spec, log)
                 self.step(job, f"Writing the document with {llm_api.status(spec['settings'], True)['label']}")
                 loop = asyncio.get_running_loop()
                 last = [0.0]
@@ -665,6 +681,7 @@ class BeautifyJobs:
             else:
                 cmd = beautify.claude_command(spec)
                 log.header(spec, "claude", spec["settings"]["beautify_model"], cmd)
+                await self._screen_notes(job, spec, log)
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, cwd=str(spec["cwd"]), stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=STREAM_LIMIT)
@@ -1212,6 +1229,31 @@ async def ai_set(data: dict = Body(...)):
     return await ai_get()
 
 
+@app.get("/api/ai/vision")
+async def ai_vision_get():
+    settings = S.load_settings()
+    cfg = image_notes.vision_config(settings)
+    return {"provider": settings.get("vision_provider") or "", "model": settings.get("vision_model") or "",
+            "providers": {p: {"name": llm_api.PROVIDERS[p]["name"], "model": m,
+                              "key": llm_api.mask(llm_api.stored_key(p)) if llm_api.stored_key(p) else "",
+                              "env_key": bool(llm_api.env_key(p))}
+                          for p, m in image_notes.VISION_MODELS.items()},
+            "effective": {"provider": cfg["provider"], "model": cfg["model"]},
+            "problem": image_notes.vision_problem(cfg)}
+
+
+@app.post("/api/ai/vision")
+async def ai_vision_set(data: dict = Body(...)):
+    """{provider: ''|openai|gemini|anthropic|openrouter, model, api_key?}"""
+    provider = data.get("provider") or ""
+    if provider and provider not in image_notes.VISION_MODELS:
+        _err(ValueError("This provider can't describe images here"))
+    if provider and data.get("api_key"):
+        llm_api.set_key(provider, data["api_key"])
+    S.save_settings({"vision_provider": provider, "vision_model": (data.get("model") or "").strip()})
+    return await ai_vision_get()
+
+
 @app.post("/api/ai/test-claude")
 async def ai_test_claude():
     """Run a tiny `claude -p` exactly as Beautify does, and report what it says."""
@@ -1556,6 +1598,16 @@ async def beautify_start(project: str, sid: str, data: dict = Body(default={})):
         _err(e)
 
 
+@app.post("/api/projects/{project}/sessions/{sid}/versions/{v}/embed")
+async def beautify_embed(project: str, sid: str, v: int):
+    """vN.html → vN-emb.html with the images embedded (one file to share)."""
+    try:
+        out = await asyncio.to_thread(beautify.embed_version, S.safe_name(project), S.safe_name(sid), v)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    return {"url": S.file_url(out), "name": out.name, "size": out.stat().st_size}
+
+
 @app.delete("/api/projects/{project}/sessions/{sid}/beautify")
 async def beautify_cancel(project: str, sid: str):
     await jobs.cancel(project, sid)
@@ -1744,6 +1796,22 @@ async def record_auto(data: dict = Body(...)):
 
 
 # Auto frames (autoframes.py / select_frames.py)
+
+@app.post("/api/projects/{project}/sessions/{sid}/describe")
+async def describe_image(project: str, sid: str, data: dict = Body(...)):
+    """Describe a screenshot or auto frame with the vision model: {path} → {text}.
+    The description (<image>.desc.md) replaces its OCR text in Beautify."""
+    path = Path(data.get("path") or "").resolve()
+    root = S.project_dir(project).resolve()
+    if root not in path.parents or path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        _err(ValueError("Not an image of this project"))
+    try:
+        text = await asyncio.to_thread(image_notes.describe, path)
+    except Exception as e:
+        _err(e)
+    hub.emit({"type": "described", "project": project, "sid": sid, "path": str(path)})
+    return {"text": text, "path": str(path)}
+
 
 @app.get("/api/projects/{project}/sessions/{sid}/frames")
 async def frames_get(project: str, sid: str):
